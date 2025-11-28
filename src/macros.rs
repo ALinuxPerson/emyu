@@ -1,30 +1,4 @@
 #[macro_export]
-macro_rules! impl_child_parent_model_getter_relationship {
-    ($parent:ident: $child:ident) => {
-        impl $crate::ChildModelGetter for $child {
-            type Parent = $parent;
-
-            fn parent(&self) -> &Self::Parent {
-                &self.0
-            }
-        }
-
-        impl $crate::ParentModelGetter<$child> for $parent {}
-    };
-}
-
-#[macro_export]
-macro_rules! impl_child_parent_model_relationship {
-    ($parent:ident: $child:ident) => {
-        impl $crate::ChildModel for $child {
-            type Parent = $parent;
-        }
-
-        impl $crate::ParentModel<$child> for $parent {}
-    };
-}
-
-#[macro_export]
 macro_rules! make_child_model_getter {
     (
         type Model = $model:ty;

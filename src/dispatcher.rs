@@ -1,5 +1,6 @@
-use crate::base::{Application, ChildModel, Model, ParentModel};
+use crate::base::Model;
 use async_trait::async_trait;
+use dyn_clone::DynClone;
 use futures::SinkExt;
 use futures::channel::mpsc;
 use std::marker::PhantomData;
@@ -11,13 +12,15 @@ use thiserror::Error;
 pub struct MvuRuntimeChannelClosedError;
 
 #[async_trait]
-pub trait Dispatcher<Msg>: Clone {
-    async fn try_dispatch(&self, message: Msg) -> Result<(), MvuRuntimeChannelClosedError>;
+pub trait Dispatcher<Msg>: Send + DynClone {
+    async fn try_dispatch(&mut self, message: Msg) -> Result<(), MvuRuntimeChannelClosedError>;
 }
+
+dyn_clone::clone_trait_object!(<Msg> Dispatcher<Msg>);
 
 #[async_trait]
 pub trait DispatcherExt<Msg: Send>: Dispatcher<Msg> {
-    async fn dispatch(&self, message: Msg)
+    async fn dispatch(&mut self, message: Msg)
     where
         Msg: 'async_trait,
     {
@@ -34,72 +37,87 @@ where
 {
 }
 
-pub struct MessageDispatcher<A: Application>(
-    pub(crate) mpsc::Sender<<A::RootModel as Model>::Message>,
-);
+pub struct MessageDispatcher<M: Model>(pub(crate) mpsc::Sender<M::Message>);
 
-impl<A: Application> MessageDispatcher<A> {
-    pub fn map<CM>(self) -> MappedDispatcher<Self, CM>
+impl<M: Model> MessageDispatcher<M> {
+    pub fn map<MChild, F>(self, f: F) -> MappedDispatcher<MChild, M, F>
     where
-        CM: ChildModel<Parent = A::RootModel>,
-        <A::RootModel as Model>::Message: From<CM::Message>,
+        MChild: Model,
+        F: FnMut(MChild::Message) -> M::Message,
     {
-        MappedDispatcher(self, PhantomData)
+        MappedDispatcher {
+            dispatcher: Box::new(self),
+            f,
+            _child: PhantomData,
+        }
     }
 }
 
 #[async_trait]
-impl<A: Application> Dispatcher<<A::RootModel as Model>::Message> for MessageDispatcher<A> {
+impl<M: Model> Dispatcher<M::Message> for MessageDispatcher<M> {
     async fn try_dispatch(
-        &self,
-        message: <A::RootModel as Model>::Message,
+        &mut self,
+        message: M::Message,
     ) -> Result<(), MvuRuntimeChannelClosedError> {
         self.0
-            .clone()
             .send(message)
             .await
             .map_err(|_| MvuRuntimeChannelClosedError)
     }
 }
 
-impl<A: Application> Clone for MessageDispatcher<A> {
+impl<M: Model> Clone for MessageDispatcher<M> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub struct MappedDispatcher<PD, CM>(PD, PhantomData<CM>);
+pub struct MappedDispatcher<MChild, MParent: Model, F> {
+    dispatcher: Box<dyn Dispatcher<MParent::Message>>,
+    f: F,
+    _child: PhantomData<MChild>,
+}
 
-impl<PD, CM> MappedDispatcher<PD, CM> {
-    pub fn map<SCM>(self) -> MappedDispatcher<Self, SCM>
+impl<MChild, MParent, F> MappedDispatcher<MChild, MParent, F>
+where
+    MChild: Model,
+    MParent: Model,
+    F: FnMut(MChild::Message) -> MParent::Message + Send + Clone + 'static,
+{
+    pub fn map<MSubChild, SubF>(self, f: SubF) -> MappedDispatcher<MSubChild, MChild, SubF>
     where
-        SCM: ChildModel<Parent = CM>,
-        CM: ParentModel<SCM>,
-        CM::Message: From<SCM::Message>,
+        MSubChild: Model,
+        SubF: FnMut(MSubChild::Message) -> MChild::Message,
     {
-        MappedDispatcher(self, PhantomData)
+        MappedDispatcher {
+            dispatcher: Box::new(self),
+            f,
+            _child: PhantomData,
+        }
     }
 }
 
-impl<PD, CM> Clone for MappedDispatcher<PD, CM>
-where
-    CM: ChildModel,
-    PD: Dispatcher<<<CM as ChildModel>::Parent as Model>::Message>,
-{
+impl<MChild, MParent: Model, F: Clone> Clone for MappedDispatcher<MChild, MParent, F> {
     fn clone(&self) -> Self {
-        Self(self.0.clone(), PhantomData)
+        Self {
+            dispatcher: self.dispatcher.clone(),
+            f: self.f.clone(),
+            _child: PhantomData,
+        }
     }
 }
 
 #[async_trait]
-impl<PD, CM> Dispatcher<CM::Message> for MappedDispatcher<PD, CM>
+impl<MChild, MParent, F> Dispatcher<MChild::Message> for MappedDispatcher<MChild, MParent, F>
 where
-    CM: ChildModel + Sync,
-    CM::Message: Send,
-    PD: Dispatcher<<<CM as ChildModel>::Parent as Model>::Message> + Sync,
-    <CM::Parent as Model>::Message: From<CM::Message>,
+    MChild: Model,
+    MParent: Model,
+    F: FnMut(MChild::Message) -> MParent::Message + Send + Clone,
 {
-    async fn try_dispatch(&self, message: CM::Message) -> Result<(), MvuRuntimeChannelClosedError> {
-        self.0.try_dispatch(message.into()).await
+    async fn try_dispatch(
+        &mut self,
+        message: MChild::Message,
+    ) -> Result<(), MvuRuntimeChannelClosedError> {
+        self.dispatcher.try_dispatch((self.f)(message)).await
     }
 }

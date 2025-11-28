@@ -69,11 +69,11 @@ impl<'rt, A: Application> UpdateContext<'rt, A> {
 pub struct ApplyContext<'rt, A: Application> {
     pub model: &'rt mut A::RootModel,
     pub state: &'rt mut A::State,
-    pub message_dispatcher: &'rt MessageDispatcher<A>,
+    pub message_dispatcher: &'rt mut MessageDispatcher<A::RootModel>,
 }
 
 impl<'rt, A: Application> ApplyContext<'rt, A> {
-    pub async fn dispatch_message(&self, message: RootMessage<A>) {
+    pub async fn dispatch_message(&mut self, message: RootMessage<A>) {
         self.message_dispatcher.dispatch(message).await
     }
 }
@@ -93,7 +93,7 @@ pub struct MvuRuntime<A: Application> {
     queue: CommandQueue<A>,
     dirty_regions: DirtyRegions<A>,
 
-    message_dispatcher: MessageDispatcher<A>,
+    message_dispatcher: MessageDispatcher<A::RootModel>,
     message_rx: mpsc::Receiver<RootMessage<A>>,
 
     model_getter_tx: mpsc::Sender<ModelGetterMessage<A>>,
@@ -121,7 +121,7 @@ impl<A: Application> MvuRuntime<A> {
 }
 
 impl<A: Application> MvuRuntime<A> {
-    pub fn message_dispatcher(&self) -> MessageDispatcher<A> {
+    pub fn message_dispatcher(&self) -> MessageDispatcher<A::RootModel> {
         self.message_dispatcher.clone()
     }
 
@@ -176,7 +176,7 @@ impl<A: Application> MvuRuntime<A> {
         let mut command_ctx = ApplyContext {
             model: &mut self.model,
             state: &mut self.state,
-            message_dispatcher: &self.message_dispatcher,
+            message_dispatcher: &mut self.message_dispatcher,
         };
         while let Some(mut command) = self.queue.pop() {
             tracing::debug!(?command, "applying command");
