@@ -1,17 +1,13 @@
-use crate::base::{Application, Command, Model, ModelGetter, RootModelGetter};
-use crate::dispatcher::MessageDispatcher;
+use crate::base::{Application, Command, Model};
+use crate::{Dispatcher, ModelHandler, ModelMessage};
 use futures::channel::mpsc;
+use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use std::collections::{HashSet, VecDeque};
 use std::mem;
 use std::ops::ControlFlow;
-use crate::DispatcherExt;
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
-
-type RootMessage<A> = <<A as Application>::RootModel as Model>::Message;
-type ModelGetterMessage<A> =
-    <<<A as Application>::RootModel as Model>::Getter as ModelGetter>::Message;
 
 pub struct CommandQueue<A>(VecDeque<Box<dyn Command<ForApp = A>>>);
 
@@ -69,12 +65,16 @@ impl<'rt, A: Application> UpdateContext<'rt, A> {
 pub struct ApplyContext<'rt, A: Application> {
     pub model: &'rt mut A::RootModel,
     pub state: &'rt mut A::State,
-    pub message_dispatcher: &'rt mut MessageDispatcher<A::RootModel>,
+    pub dispatcher: &'rt mut Dispatcher<A::RootModel>,
 }
 
 impl<'rt, A: Application> ApplyContext<'rt, A> {
-    pub async fn dispatch_message(&mut self, message: RootMessage<A>) {
-        self.message_dispatcher.dispatch(message).await
+    pub async fn send_message<Msg>(&mut self, message: Msg)
+    where
+        Msg: ModelMessage,
+        A::RootModel: ModelHandler<Msg>,
+    {
+        self.dispatcher.send(message).await
     }
 }
 
@@ -86,6 +86,15 @@ impl<A: Application> ShouldRefreshSubscriber<A> {
     }
 }
 
+pub(crate) type UpdateAction<M> =
+    Box<dyn FnOnce(&mut M, &mut UpdateContext<<M as Model>::ForApp>) + Send>;
+pub(crate) type GetterAction<M> = Box<dyn for<'a> FnOnce(&'a M) -> BoxFuture<'a, ()> + Send>;
+
+pub(crate) enum Action<M: Model> {
+    Update(UpdateAction<M>),
+    Getter(GetterAction<M>),
+}
+
 pub struct MvuRuntime<A: Application> {
     model: A::RootModel,
     state: A::State,
@@ -93,11 +102,8 @@ pub struct MvuRuntime<A: Application> {
     queue: CommandQueue<A>,
     dirty_regions: DirtyRegions<A>,
 
-    message_dispatcher: MessageDispatcher<A::RootModel>,
-    message_rx: mpsc::Receiver<RootMessage<A>>,
-
-    model_getter_tx: mpsc::Sender<ModelGetterMessage<A>>,
-    model_getter_rx: mpsc::Receiver<ModelGetterMessage<A>>,
+    dispatcher: Dispatcher<A::RootModel>,
+    action_rx: mpsc::Receiver<Action<A::RootModel>>,
 
     should_refresh_tx: mpsc::Sender<A::RegionId>,
 }
@@ -121,16 +127,6 @@ impl<A: Application> MvuRuntime<A> {
 }
 
 impl<A: Application> MvuRuntime<A> {
-    pub fn message_dispatcher(&self) -> MessageDispatcher<A::RootModel> {
-        self.message_dispatcher.clone()
-    }
-
-    pub fn model_getter(&self) -> <A::RootModel as Model>::Getter {
-        <_>::new(self.model_getter_tx.clone())
-    }
-}
-
-impl<A: Application> MvuRuntime<A> {
     pub async fn run(mut self) {
         tracing::debug!("mvu runtime has started");
         loop {
@@ -142,41 +138,26 @@ impl<A: Application> MvuRuntime<A> {
     }
 
     async fn run_once(&mut self) -> ControlFlow<()> {
-        futures::select! {
-            message = self.message_rx.next() => match message {
-                Some(message) => self.handle_message(message).await,
-                None => {
-                    tracing::debug!("message channel closed");
-                    return ControlFlow::Break(());
-                },
-            },
-            message = self.model_getter_rx.next() => match message {
-                Some(message) => self.model.getter(message),
-                None => {
-                    tracing::debug!("model getter channel closed");
-                    return ControlFlow::Break(())
-                },
-            },
-            complete => return ControlFlow::Break(()),
-        }
+        match self.action_rx.next().await {
+            Some(Action::Update(action)) => self.handle_update(action).await,
+            Some(Action::Getter(action)) => self.handle_getter(action).await,
+            None => return ControlFlow::Break(()),
+        };
 
         ControlFlow::Continue(())
     }
 
-    #[tracing::instrument(skip(self, message), fields(msg_type = ?std::any::type_name::<RootMessage<A>>()))]
-    async fn handle_message(&mut self, message: RootMessage<A>) {
-        tracing::debug!(?message, "handling message");
-
+    async fn handle_update(&mut self, action: UpdateAction<A::RootModel>) {
         let mut update_ctx = UpdateContext {
             queue: &mut self.queue,
             dirty_regions: &mut self.dirty_regions,
         };
-        self.model.update(message, &mut update_ctx);
+        action(&mut self.model, &mut update_ctx);
 
         let mut command_ctx = ApplyContext {
             model: &mut self.model,
             state: &mut self.state,
-            message_dispatcher: &mut self.message_dispatcher,
+            dispatcher: &mut self.dispatcher,
         };
         while let Some(mut command) = self.queue.pop() {
             tracing::debug!(?command, "applying command");
@@ -193,6 +174,16 @@ impl<A: Application> MvuRuntime<A> {
                 }
             }
         }
+    }
+
+    async fn handle_getter(&self, action: GetterAction<A::RootModel>) {
+        action(&self.model).await
+    }
+}
+
+impl<A: Application> MvuRuntime<A> {
+    pub fn dispatcher(&self) -> Dispatcher<A::RootModel> {
+        self.dispatcher.clone()
     }
 }
 
@@ -254,8 +245,7 @@ impl<A: Application> MvuRuntimeBuilder<A> {
         let model = self.model.expect("RootModel was not initialized");
         let state = self.state.expect("State was not initialized");
 
-        let (message_tx, message_rx) = mpsc::channel(self.buffer_size);
-        let (model_getter_tx, model_getter_rx) = mpsc::channel(self.buffer_size);
+        let (action_tx, action_rx) = mpsc::channel(self.buffer_size);
         let (should_refresh_tx, should_refresh_rx) = mpsc::channel(self.buffer_size);
 
         (
@@ -264,10 +254,8 @@ impl<A: Application> MvuRuntimeBuilder<A> {
                 state,
                 queue: CommandQueue::default(),
                 dirty_regions: DirtyRegions::default(),
-                message_dispatcher: MessageDispatcher(message_tx),
-                message_rx,
-                model_getter_tx,
-                model_getter_rx,
+                dispatcher: Dispatcher::new_root(action_tx),
+                action_rx,
                 should_refresh_tx,
             },
             ShouldRefreshSubscriber(should_refresh_rx),

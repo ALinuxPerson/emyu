@@ -2,47 +2,43 @@ use thiserror::Error;
 use crate::dispatcher::MvuRuntimeChannelClosedError;
 use crate::runtime::{ApplyContext, UpdateContext};
 use async_trait::async_trait;
-use futures::channel::{mpsc, oneshot};
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::marker::PhantomData;
 
 pub trait Application {
-    type RootModel: RootModel<ForApp = Self>;
+    type RootModel: Model<ForApp = Self>;
     type RegionId: Debug + Eq + Hash;
     type State;
 }
 
-pub trait Model: Send + 'static {
+pub trait ModelMessage: Send + 'static {}
+
+pub trait ModelGetterMessage: Send + 'static {
+    type Data: Send + 'static;
+}
+
+#[macro_export]
+macro_rules! make_model_getter_message {
+    ($(#[$($meta:meta)*])* $vis:vis struct $name:ident; type Data = $data:ty) => {
+        $(#[$($meta)*])*
+        $vis struct $name;
+        
+        impl $crate::ModelGetterMessage for $name {
+            type Data = $data;
+        }
+    };
+}
+
+pub trait Model: Send + Sync + 'static {
     type ForApp: Application;
-    type Getter: ModelGetter<Model = Self>;
-    type Message: Send + Debug;
-
-    fn update(
-        &mut self,
-        message: Self::Message,
-        ctx: &mut UpdateContext<Self::ForApp>,
-    );
-    fn getter(&self, message: <Self::Getter as ModelGetter>::Message);
 }
 
-pub trait RootModel: Model<Getter: RootModelGetter> {}
-
-pub trait ModelGetter {
-    type Model: Model<Getter = Self>;
-    type Message;
+pub trait ModelHandler<M: ModelMessage>: Model {
+    fn update(&mut self, message: M, ctx: &mut UpdateContext<Self::ForApp>);
 }
 
-#[async_trait]
-pub trait SendableModelGetter: ModelGetter {
-    async fn send<T: Send>(
-        &self,
-        f: impl FnOnce(oneshot::Sender<T>) -> Self::Message + Send,
-    ) -> Result<T, Error>;
-}
-
-pub trait RootModelGetter: SendableModelGetter {
-    fn new(tx: mpsc::Sender<Self::Message>) -> Self;
+pub trait ModelGetterHandler<M: ModelGetterMessage>: Model {
+    fn getter(&self, message: M) -> M::Data;
 }
 
 #[async_trait]
@@ -62,20 +58,18 @@ pub enum Error {
 }
 
 impl From<MvuRuntimeChannelClosedError> for Error {
-    fn from(_value: MvuRuntimeChannelClosedError) -> Self {
+    fn from(_: MvuRuntimeChannelClosedError) -> Self {
         Self::MvuRuntimeChannelClosed
     }
 }
 
-pub struct AdHocApp<RootModel, ViewId, State>(PhantomData<(RootModel, ViewId, State)>);
-
-impl<RootModel, ViewId, State> Application for AdHocApp<RootModel, ViewId, State>
-where
-    RootModel: self::RootModel<ForApp = Self>,
-    ViewId: Debug + Eq + Hash,
-{
-    type RootModel = RootModel;
-    type RegionId = ViewId;
-    type State = State;
+impl From<ModelGetterChannelClosedError> for Error {
+    fn from(_: ModelGetterChannelClosedError) -> Self {
+        Self::ModelGetterChannelClosed
+    }
 }
 
+#[derive(Error, Debug)]
+#[non_exhaustive]
+#[error("the channel to the model getter is closed")]
+pub struct ModelGetterChannelClosedError;
