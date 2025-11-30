@@ -1,4 +1,4 @@
-use crate::runtime::{GetterAction, Action, UpdateAction};
+use crate::runtime::{Action, GetterAction, UpdateAction};
 use crate::{
     Application, Error, Model, ModelGetterHandler, ModelGetterMessage, ModelHandler, ModelMessage,
     UpdateContext,
@@ -185,7 +185,11 @@ impl<M: Model> Updater<M> {
     {
         Updater(self.0.zoom(Lens {
             get_mut: lens,
-            get: |_| panic!("did not expect `get` to be called for an Updater only dispatcher instance"),
+            get: |_| {
+                unreachable!(
+                    "did not expect `get` to be called for an Updater only dispatcher instance"
+                )
+            },
         }))
     }
 }
@@ -220,7 +224,11 @@ impl<M: Model> Getter<M> {
         Child: Model<ForApp = M::ForApp>,
     {
         Getter(self.0.zoom(Lens {
-            get_mut: |_| panic!("did not expect `get_mut` to be called for a Getter only dispatcher instance"),
+            get_mut: |_| {
+                unreachable!(
+                    "did not expect `get_mut` to be called for a Getter only dispatcher instance"
+                )
+            },
             get: lens,
         }))
     }
