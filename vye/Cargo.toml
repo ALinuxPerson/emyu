@@ -1,0 +1,11 @@
+[package]
+name = "vye"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+derive = ["dep:vye-derive"]
+
+[dependencies]
+vye-base = { version = "0.1.0", path = "../base" }
+vye-derive = { version = "0.1.0", path = "../derive", optional = true }
