@@ -2,7 +2,7 @@ mod command_message;
 mod getter;
 
 #[macro_export]
-macro_rules! updater {
+macro_rules! wrap_updater {
     (
         $(#[$($meta:meta)*])*
         $vis:vis struct $UpdaterName:ident for $ModelName:ty {
