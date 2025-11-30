@@ -4,16 +4,17 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::token::Token;
-use syn::{Attribute, Expr, FnArg, ReturnType, Signature, Token, Type, Visibility, braced, token};
+use syn::{
+    Attribute, Expr, FnArg, Pat, ReturnType, Signature, Token, Type, Visibility, braced, token,
+};
 
 fn extract_args(inputs: &Punctuated<FnArg, Token![,]>) -> Punctuated<Ident, Token![,]> {
     let mut args = Punctuated::new();
     for input in inputs {
-        if let FnArg::Typed(pat_type) = input {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                args.push(pat_ident.ident.clone());
-            }
+        if let FnArg::Typed(pat_type) = input
+            && let Pat::Ident(pat_ident) = &*pat_type.pat
+        {
+            args.push(pat_ident.ident.clone());
         }
     }
     args
