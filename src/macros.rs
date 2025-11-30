@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! command {
     ($($tt:tt)*) => {
-        $crate::__parse_struct!(
+        $crate::__define_struct_and_delegate!(
             @impl $crate::__command_impl;
             $($tt)*
         );
@@ -11,7 +11,7 @@ macro_rules! command {
 #[macro_export]
 macro_rules! message {
     ($($tt:tt)*) => {
-        $crate::__parse_struct!(
+        $crate::__define_struct_and_delegate!(
             @impl $crate::__message_impl;
             $($tt)*
         );
@@ -19,31 +19,22 @@ macro_rules! message {
 }
 
 #[macro_export]
-macro_rules! getter {
-    ($($tt:tt)*) => {
-        $crate::__parse_struct!(
-            @impl $crate::__getter_impl;
-            $($tt)*
-        );
-    };
-}
-
-#[macro_export]
 #[doc(hidden)]
-macro_rules! __parse_struct {
+macro_rules! __define_struct_and_delegate {
     // 1. Named Fields: struct Name { ... }
     (
         @impl $callback:path;
         $(#[$meta:meta])*
         $vis:vis struct $Name:ident {
             $($fields:tt)*
-        } $($rest:tt)*
+        } for $Model:ty;
+        $($rest:tt)*
     ) => {
         $(#[$meta])*
         $vis struct $Name {
             $($fields)*
         }
-        $crate::__parse_header!(@impl $callback; $Name; $($rest)*);
+        $callback!($Name $Model; $($rest)*);
     };
 
     // 2. Tuple Struct: struct Name( ... );
@@ -52,54 +43,36 @@ macro_rules! __parse_struct {
         $(#[$meta:meta])*
         $vis:vis struct $Name:ident (
             $($fields:tt)*
-        ) $($rest:tt)*
+        ) for $Model:ty;
+        $($rest:tt)*
     ) => {
         $(#[$meta])*
         $vis struct $Name ( $($fields)* );
-        $crate::__parse_header!(@impl $callback; $Name; $($rest)*);
+        $callback!($Name $Model; $($rest)*);
     };
 
     // 3. Unit Struct: struct Name;
     (
         @impl $callback:path;
         $(#[$meta:meta])*
-        $vis:vis struct $Name:ident $($rest:tt)*
+        $vis:vis struct $Name:ident for $Model:ty;
+        $($rest:tt)*
     ) => {
         $(#[$meta])*
         $vis struct $Name;
-        $crate::__parse_header!(@impl $callback; $Name; $($rest)*);
+        $callback!($Name $Model; $($rest)*);
     };
 }
 
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __parse_header {
-    // hacky workaround for `__getter_impl`, making this macro not really generic anymore is it
-    (
-        @impl $callback:path;
-        $Name:ident;
-        for $Model:ty where Data = $Ret:ty;
-        $($rest:tt)*
-    ) => {
-        $callback!($Name $Model; where Data = $Ret; $($rest)*);
-    };
-    (
-        @impl $callback:path;
-        $Name:ident;
-        for $Model:ty;
-        $($rest:tt)*
-    ) => {
-        $callback!($Name $Model; ; $($rest)*);
-    };
-}
-
+// -----------------------------------------------------------------------------
+// Specific Implementation Logic
+// -----------------------------------------------------------------------------
 
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __command_impl {
     (
         $CommandName:ident $ModelName:ty;
-        ;
         | $this:ident, $ctx:ident | $body:expr
     ) => {
         #[$crate::__macros::async_trait]
@@ -123,8 +96,7 @@ macro_rules! __command_impl {
 #[doc(hidden)]
 macro_rules! __message_impl {
     (
-        $MsgName:ident $ModelName:ty;
-        $body:expr
+        $MsgName:ident $ModelName:ty; $body:expr
     ) => {
         impl $crate::ModelMessage for $MsgName {}
 
@@ -132,27 +104,6 @@ macro_rules! __message_impl {
             fn update(&mut self, message: $MsgName, ctx: &mut $crate::UpdateContext<<Self as $crate::Model>::ForApp>) {
                 let f: fn(&mut $ModelName, $MsgName, &mut $crate::UpdateContext<<Self as $crate::Model>::ForApp>) = $body;
                 f(self, message, ctx);
-            }
-        }
-    };
-}
-
-#[macro_export]
-#[doc(hidden)]
-macro_rules! __getter_impl {
-    (
-        $MsgName:ident $ModelName:ty;
-        where Data = $Ret:ty;
-        | $this:ident, $msg:ident | $body:expr
-    ) => {
-        impl $crate::ModelGetterMessage for $MsgName {
-            type Data = $Ret;
-        }
-
-        impl $crate::ModelGetterHandler<$MsgName> for $ModelName {
-            fn getter(&self, message: $MsgName) -> $Ret {
-                let f: fn(&$ModelName, $MsgName) -> $Ret = | $this, $msg | $body;
-                f(self, message)
             }
         }
     };
