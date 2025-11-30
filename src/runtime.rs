@@ -3,10 +3,11 @@ use crate::{Dispatcher, ModelHandler, ModelMessage, ModelWithRegion};
 use futures::channel::mpsc;
 use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
-use std::any::{Any, TypeId, type_name};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::any::{Any, type_name};
+use std::collections::{HashSet, VecDeque};
 use std::mem;
 use std::ops::ControlFlow;
+use type_map::TypeMap;
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -200,36 +201,32 @@ impl<A: Application> MvuRuntime<A> {
 }
 
 #[derive(Default)]
-pub struct World(HashMap<TypeId, Box<dyn Any>>);
+pub struct World(TypeMap);
 
 impl World {
-    pub(crate) fn add_with<S: Any>(mut self, state: S) -> Self {
-        self.0.insert(state.type_id(), Box::new(state));
+    pub(crate) fn add_with<S: 'static>(mut self, state: S) -> Self {
+        self.0.insert(state);
         self
     }
 
-    pub(crate) fn add<S: Any + Default>(self) -> Self {
+    pub(crate) fn add<S: Default + 'static>(self) -> Self {
         self.add_with(S::default())
     }
 
-    pub fn try_get<S: Any>(&self) -> Option<&S> {
-        self.0
-            .get(&TypeId::of::<S>())
-            .and_then(|s| s.downcast_ref())
+    pub fn try_get<S: 'static>(&self) -> Option<&S> {
+        self.0.get()
     }
 
-    pub fn get<S: Any>(&self) -> &S {
+    pub fn get<S: 'static>(&self) -> &S {
         self.try_get()
             .unwrap_or_else(|| panic!("`{}` does not exist in the world", type_name::<S>()))
     }
 
-    pub fn try_get_mut<S: Any>(&mut self) -> Option<&mut S> {
-        self.0
-            .get_mut(&TypeId::of::<S>())
-            .and_then(|s| s.downcast_mut())
+    pub fn try_get_mut<S: 'static>(&mut self) -> Option<&mut S> {
+        self.0.get_mut()
     }
 
-    pub fn get_mut<S: Any>(&mut self) -> &mut S {
+    pub fn get_mut<S: 'static>(&mut self) -> &mut S {
         self.try_get_mut()
             .unwrap_or_else(|| panic!("`{}` does not exist in the world", type_name::<S>()))
     }
