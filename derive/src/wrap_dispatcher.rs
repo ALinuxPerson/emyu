@@ -106,7 +106,7 @@ impl DispatcherDef {
                         let getter_name = &getter_def.name;
                         dispatcher_methods.push(quote! {
                             #vis fn split(self) -> (#updater_name, #getter_name) {
-                                (#updater_name(::core::clone::Clone(&self)), #getter_name(self))
+                                (#updater_name(::core::clone::Clone::clone(&self)), #getter_name(self))
                             }
                         })
                     } else {
@@ -315,7 +315,6 @@ impl Parse for MethodDef {
             Ok(MethodDef { vis, kind })
         } else {
             let kind = input.parse::<Ident>()?;
-            let _fn = input.parse::<Token![fn]>()?;
             let signature = input.parse::<Signature>()?;
 
             // (MessageType) or (MessageType, ReturnType)
