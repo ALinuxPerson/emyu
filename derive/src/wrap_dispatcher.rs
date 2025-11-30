@@ -106,7 +106,7 @@ impl DispatcherDef {
                         let getter_name = &getter_def.name;
                         dispatcher_methods.push(quote! {
                             #vis fn split(self) -> (#updater_name, #getter_name) {
-                                (#updater_name(::core::clone::Clone(&self)), #getter_name(self))
+                                (#updater_name(::core::clone::Clone::clone(&self)), #getter_name(self))
                             }
                         })
                     } else {
