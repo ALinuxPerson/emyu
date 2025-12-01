@@ -36,7 +36,7 @@ struct GenerateDispatcherArgs {
 #[derive(FromMeta)]
 #[darling(derive_syn_parse)]
 pub struct DispatcherArgs {
-    generate: GenerateDispatcherArgs,
+    generate: Option<GenerateDispatcherArgs>,
 }
 
 struct DispatcherContext {
