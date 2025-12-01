@@ -159,11 +159,11 @@ mod updater {
                 .collect::<Vec<_>>();
             let name = Ident::new(&ccase!(pascal, self.name.to_string()), Span::call_site());
             let attrs = &self.attrs;
+            let vis = &self.vis;
             let block = &self.block;
             Ok(quote! {
-                // todo: add ability to specify visibility of #name
                 #(#attrs)*
-                struct #name {
+                #vis struct #name {
                     // todo: add ability to specify visibility and attributes of fields
                     #(#fields),*
                 }
