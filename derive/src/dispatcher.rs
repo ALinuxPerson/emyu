@@ -22,10 +22,25 @@ fn parse_then_filter<T: FromAttributes>(
 }
 
 #[derive(FromMeta)]
+struct GenerateDispatcherArgs {
+    #[darling(default)]
+    dispatcher: Option<Ident>,
+
+    #[darling(default)]
+    updater: Option<Ident>,
+
+    #[darling(default)]
+    getter: Option<Ident>,
+}
+
+#[derive(FromMeta)]
 #[darling(derive_syn_parse)]
-pub struct DispatcherArgs {}
+pub struct DispatcherArgs {
+    generate: GenerateDispatcherArgs,
+}
 
 struct DispatcherContext {
+    args: DispatcherArgs,
     crate_: TokenStream,
     attrs: Vec<Attribute>,
     model_ty: Type,
@@ -33,8 +48,9 @@ struct DispatcherContext {
 }
 
 impl DispatcherContext {
-    fn new(value: ItemImpl) -> syn::Result<Self> {
+    fn new(value: ItemImpl, args: DispatcherArgs) -> syn::Result<Self> {
         Ok(Self {
+            args,
             crate_: crate_(),
             attrs: value.attrs,
             model_ty: *value.self_ty,
@@ -274,6 +290,6 @@ impl DispatcherItem {
     }
 }
 
-pub fn build(value: ItemImpl) -> syn::Result<TokenStream> {
-    DispatcherContext::new(value)?.expand()
+pub fn build(value: ItemImpl, args: DispatcherArgs) -> syn::Result<TokenStream> {
+    DispatcherContext::new(value, args)?.expand()
 }

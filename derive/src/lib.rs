@@ -37,9 +37,9 @@ pub fn wrap_dispatcher(input: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn dispatcher(args: TokenStream, input: TokenStream) -> TokenStream {
-    let _args = syn::parse_macro_input!(args as dispatcher::DispatcherArgs);
+    let args = syn::parse_macro_input!(args as dispatcher::DispatcherArgs);
     let input = syn::parse_macro_input!(input as syn::ItemImpl);
-    match dispatcher::build(input) {
+    match dispatcher::build(input, args) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
