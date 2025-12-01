@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+frb-compat = ["vye-base/frb-compat"]
+tokio = ["vye-base/tokio"]
 derive = ["dep:vye-derive"]
 
 [dependencies]
