@@ -240,7 +240,7 @@ impl<'a> DispatcherContext<'a> {
             // todo: add ability to add attributes to updater
             #split_fn_vis struct #updater_name(#dispatcher_name);
             impl #crate_::WrappedGetter for #updater_name {
-                type Model = #model_ty;
+                type WrappedDispatcher = #dispatcher_name;
                 fn __new(dispatcher: #dispatcher_name, _: #crate_::dispatcher::__private::Token) -> Self {
                     Self(dispatcher)
                 }
@@ -256,7 +256,7 @@ impl<'a> DispatcherContext<'a> {
             // todo: add ability to add attributes to getter
             #split_fn_vis struct #getter_name(#dispatcher_name);
             impl #crate_::WrappedGetter for #getter_name {
-                type Model = #model_ty;
+                type WrappedDispatcher = #dispatcher_name;
                 fn __new(dispatcher: #dispatcher_name, _: #crate_::dispatcher::__private::Token) -> Self {
                     Self(dispatcher)
                 }
