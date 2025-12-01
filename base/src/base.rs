@@ -4,10 +4,22 @@ use crate::runtime::{ApplyContext, UpdateContext};
 use async_trait::async_trait;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::marker::PhantomData;
 
 pub trait Application: 'static {
     type RootModel: Model<ForApp = Self>;
     type RegionId: Debug + Eq + Hash + Send + Sync;
+}
+
+pub struct AdHocApp<RootModel, RegionId>(PhantomData<(RootModel, RegionId)>);
+
+impl<RootModel, RegionId> Application for AdHocApp<RootModel, RegionId>
+where
+    RootModel: Model<ForApp = AdHocApp<RootModel, RegionId>>,
+    RegionId: Debug + Eq + Hash + Send + Sync + 'static,
+{
+    type RootModel = RootModel;
+    type RegionId = RegionId;
 }
 
 pub trait ModelMessage: Send + 'static {}
