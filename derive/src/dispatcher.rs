@@ -466,6 +466,10 @@ impl<'a> DispatcherItem<'a> {
                 .transpose()
             })
             .collect::<syn::Result<Vec<_>>>()?;
+        let kind = match kind {
+            DispatcherItemKind::Updater { .. } => DispatcherItemKind::Updater { ctx_name },
+            DispatcherItemKind::Getter { data_ty } => DispatcherItemKind::Getter { data_ty },
+        };
 
         Ok(MaybeDispatcherItem::Is(Self {
             kind,
