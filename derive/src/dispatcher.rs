@@ -78,10 +78,7 @@ struct DispatcherItem {
     attrs: Vec<Attribute>,
     vis: Visibility,
     name: Ident,
-
-    // todo: generics support for dispatchers
     generics: Generics,
-
     inputs: Punctuated<FnArg, Token![,]>,
     block: Block,
 }
@@ -241,20 +238,21 @@ impl DispatcherItem {
         let attrs = &self.attrs;
         let vis = &self.vis;
         let block = &self.block;
+        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
         let struct_decl = quote! {
             #(#attrs)*
-            #vis struct #name {
+            #vis struct #name #impl_generics #where_clause {
                 #(#fields),*
             }
         };
         match self.kind {
             DispatcherItemKind::Updater => Ok(quote! {
                 #struct_decl
-                impl #crate_::ModelMessage for #name {}
-                impl #crate_::ModelHandler<#name> for #model_ty {
+                impl #impl_generics #crate_::ModelMessage for #name #ty_generics #where_clause {}
+                impl #impl_generics #crate_::ModelHandler<#name> for #model_ty #ty_generics #where_clause {
                     fn update(
                         &mut self,
-                        #name { #(#field_names),* }: #name,
+                        #name { #(#field_names),* }: #name #ty_generics,
                         #ctx_name: &mut #crate_::UpdateContext<<#model_ty as #crate_::Model>::ForApp>,
                     ) {
                         #block
@@ -263,11 +261,11 @@ impl DispatcherItem {
             }),
             DispatcherItemKind::Getter { data_ty } => Ok(quote! {
                 #struct_decl
-                impl #crate_::ModelGetterMessage for #name {
+                impl #impl_generics #crate_::ModelGetterMessage for #name #ty_generics #where_clause {
                     type Data = #data_ty;
                 }
-                impl #crate_::ModelGetterHandler<#name> for #model_ty {
-                    fn getter(&self, #name { #(#field_names),* }: #name) -> #data_ty {
+                impl #impl_generics #crate_::ModelGetterHandler<#name> for #model_ty #where_clause {
+                    fn getter(&self, #name { #(#field_names),* }: #name #ty_generics) -> #data_ty {
                         #block
                     }
                 }
