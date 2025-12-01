@@ -11,20 +11,20 @@ use syn::{
 };
 
 fn parse_then_filter<T: FromAttributes>(
-    attributes: Vec<Attribute>,
-) -> syn::Result<(Vec<Attribute>, T)> {
+    attributes: &[Attribute],
+) -> syn::Result<(Vec<&Attribute>, T)> {
     let value = T::from_attributes(&attributes)?;
     let attributes = attributes
-        .into_iter()
+        .iter()
         .filter(|attr| !attr.path().is_ident("vye"))
         .collect();
     Ok((attributes, value))
 }
 
 #[derive(FromMeta)]
-struct GenerateDispatcherArgs {
+struct GenerateSplitDispatcherArgs {
     #[darling(default)]
-    dispatcher: Option<Ident>,
+    vis: Option<Visibility>,
 
     #[darling(default)]
     updater: Option<Ident>,
@@ -33,46 +33,120 @@ struct GenerateDispatcherArgs {
     getter: Option<Ident>,
 }
 
+impl GenerateSplitDispatcherArgs {
+    pub fn idents(&self, model_name: &Ident) -> (Ident, Ident) {
+        let updater = self
+            .updater
+            .clone()
+            .unwrap_or_else(|| Ident::new(&format!("{model_name}Updater"), Span::call_site()));
+        let getter = self
+            .getter
+            .clone()
+            .unwrap_or_else(|| Ident::new(&format!("{model_name}Getter"), Span::call_site()));
+        (updater, getter)
+    }
+}
+
+#[derive(FromMeta)]
+struct GenerateNewDispatcherArgs {
+    #[darling(default)]
+    vis: Option<Visibility>,
+}
+
+#[derive(FromMeta)]
+struct GenerateDispatcherArgs {
+    #[darling(default)]
+    dispatcher: Option<Ident>,
+
+    #[darling(default)]
+    new: Option<GenerateNewDispatcherArgs>,
+
+    #[darling(default)]
+    split: Option<GenerateSplitDispatcherArgs>,
+}
+
+impl GenerateDispatcherArgs {
+    pub fn dispatcher(&self, model_name: &Ident) -> Ident {
+        self.dispatcher
+            .clone()
+            .unwrap_or_else(|| Ident::new(&format!("{model_name}Dispatcher"), Span::call_site()))
+    }
+}
+
 #[derive(FromMeta)]
 #[darling(derive_syn_parse)]
 pub struct DispatcherArgs {
     generate: Option<GenerateDispatcherArgs>,
 }
 
-struct DispatcherContext {
+struct DispatcherContext<'a> {
     args: DispatcherArgs,
     crate_: TokenStream,
-    attrs: Vec<Attribute>,
-    model_ty: Type,
-    items: Vec<DispatcherItem>,
+    attrs: &'a [Attribute],
+    model_ty: &'a Type,
+    model_name: Ident,
+    items: Vec<DispatcherItem<'a>>,
 }
 
-impl DispatcherContext {
-    fn new(value: ItemImpl, args: DispatcherArgs) -> syn::Result<Self> {
+impl<'a> DispatcherContext<'a> {
+    fn new(value: &'a ItemImpl, args: DispatcherArgs) -> syn::Result<Self> {
+        let model_name = match &*value.self_ty {
+            Type::Path(TypePath { path, .. }) => path
+                .segments
+                .last()
+                .ok_or_else(|| {
+                    syn::Error::new_spanned(&value.self_ty, "Provided type path has no segments")
+                })?
+                .ident
+                .clone(),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &value.self_ty,
+                    "Expected a type path for the model type",
+                ));
+            }
+        };
         Ok(Self {
             args,
             crate_: crate_(),
-            attrs: value.attrs,
-            model_ty: *value.self_ty,
+            attrs: &value.attrs,
+            model_ty: &value.self_ty,
+            model_name,
             items: value
                 .items
-                .into_iter()
+                .iter()
                 .map(DispatcherItem::new)
                 .collect::<syn::Result<Vec<_>>>()?,
         })
     }
 
-    fn expand(self) -> syn::Result<TokenStream> {
+    fn generate(&self) -> syn::Result<TokenStream> {
         let model_ty = &self.model_ty;
         let items = self
             .items
-            .into_iter()
-            .map(|item| item.expand(&self.crate_, model_ty))
+            .iter()
+            .map(|item| item.generate(&self.crate_, model_ty))
             .collect::<syn::Result<Vec<_>>>()?;
+        let items = quote! { #(#items)* };
 
-        Ok(quote! {
-            #(#items)*
-        })
+        if let Some(args) = &self.args.generate {
+            let wrapped_dispatcher = self.generate_wrapped_dispatcher(args)?;
+
+            Ok(quote! {
+                #items
+                #wrapped_dispatcher
+            })
+        } else {
+            Ok(items)
+        }
+    }
+}
+
+impl<'a> DispatcherContext<'a> {
+    fn generate_wrapped_dispatcher(&self, args: &GenerateDispatcherArgs) -> syn::Result<TokenStream> {
+        let dispatcher_name = args.dispatcher(&self.model_name);
+        let model_ty = &self.model_ty;
+        todo!()
     }
 }
 
@@ -86,27 +160,30 @@ enum DispatcherItemKind {
 struct DispatcherItemArgs {
     #[darling(default)]
     name: Option<Ident>,
+
+    #[darling(default)]
+    dispatcher: Option<Visibility>,
 }
 
-struct DispatcherItem {
+struct DispatcherItem<'a> {
     args: DispatcherItemArgs,
     kind: DispatcherItemKind,
-    attrs: Vec<Attribute>,
-    vis: Visibility,
-    name: Ident,
-    generics: Generics,
-    inputs: Punctuated<FnArg, Token![,]>,
-    block: Block,
+    attrs: Vec<&'a Attribute>,
+    vis: &'a Visibility,
+    name: &'a Ident,
+    generics: &'a Generics,
+    inputs: &'a Punctuated<FnArg, Token![,]>,
+    block: &'a Block,
 }
 
-impl DispatcherItem {
-    fn new(value: ImplItem) -> syn::Result<Self> {
+impl<'a> DispatcherItem<'a> {
+    fn new(value: &'a ImplItem) -> syn::Result<Self> {
         let value = match value {
             ImplItem::Fn(value) => value,
             other => {
                 return Err(syn::Error::new_spanned(
                     other,
-                    "Only functions are allowed in `#[vye::dispatcher]` blocks",
+                    format!("Only functions are allowed in `#[vye::dispatcher]` blocks, got {other:?}"),
                 ));
             }
         };
@@ -123,7 +200,7 @@ impl DispatcherItem {
                         ReturnType::Type(_, ty) => ty.clone(),
                         ReturnType::Default => {
                             return Err(syn::Error::new_spanned(
-                                value.sig.output,
+                                &value.sig.output,
                                 "Getter functions must have a return type",
                             ));
                         }
@@ -139,17 +216,17 @@ impl DispatcherItem {
                 "Dispatcher functions must have a self parameter",
             )
         })?;
-        let (attrs, args) = parse_then_filter(value.attrs)?;
+        let (attrs, args) = parse_then_filter(&value.attrs)?;
 
         Ok(Self {
             kind,
             args,
             attrs,
-            vis: value.vis,
-            name: value.sig.ident,
-            generics: value.sig.generics,
-            inputs: value.sig.inputs,
-            block: value.block,
+            vis: &value.vis,
+            name: &value.sig.ident,
+            generics: &value.sig.generics,
+            inputs: &value.sig.inputs,
+            block: &value.block,
         })
     }
 }
@@ -177,16 +254,16 @@ struct FieldArgs {
     vis: Option<Visibility>,
 }
 
-struct DispatcherField {
+struct DispatcherField<'a> {
     args: FieldArgs,
-    attrs: Vec<Attribute>,
-    name: Ident,
-    ty: Type,
+    attrs: Vec<&'a Attribute>,
+    name: &'a Ident,
+    ty: &'a Type,
 }
 
-impl DispatcherField {
+impl<'a> DispatcherField<'a> {
     fn new(
-        fn_arg: FnArg,
+        fn_arg: &'a FnArg,
         kind: &DispatcherItemKind,
         ctx_name: &mut Option<Ident>,
     ) -> syn::Result<Option<Self>> {
@@ -196,23 +273,23 @@ impl DispatcherField {
             FnArg::Typed(pat_type) => {
                 // `&mut UpdateContext<App>`, skip
                 if let DispatcherItemKind::Updater = kind
-                    && let Some(ident) = is_update_context(&pat_type)
+                    && let Some(ident) = is_update_context(pat_type)
                 {
                     *ctx_name = Some(ident.clone());
                     return Ok(None);
                 }
 
                 // todo: more sophisticated error handling for this case
-                let Pat::Ident(PatIdent { ident: name, .. }) = *pat_type.pat else {
+                let Pat::Ident(PatIdent { ident: name, .. }) = &*pat_type.pat else {
                     return Ok(None);
                 };
 
-                let (attrs, field_args) = parse_then_filter(pat_type.attrs)?;
+                let (attrs, field_args) = parse_then_filter(&pat_type.attrs)?;
                 Ok(Some(Self {
                     args: field_args,
                     attrs,
                     name,
-                    ty: *pat_type.ty,
+                    ty: &pat_type.ty,
                 }))
             }
         }
@@ -220,7 +297,7 @@ impl DispatcherField {
 
     fn to_field(&self) -> Field {
         Field {
-            attrs: self.attrs.clone(),
+            attrs: self.attrs.iter().copied().cloned().collect(),
             vis: self.args.vis.clone().unwrap_or(Visibility::Inherited),
             mutability: FieldMutability::None,
             colon_token: Some(Token![:](self.name.span())),
@@ -230,25 +307,25 @@ impl DispatcherField {
     }
 }
 
-impl ToTokens for DispatcherField {
+impl<'a> ToTokens for DispatcherField<'a> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.to_field().to_tokens(tokens)
     }
 }
 
-impl DispatcherItem {
-    fn make_fields(&mut self, ctx_name: &mut Option<Ident>) -> syn::Result<Vec<DispatcherField>> {
-        mem::take(&mut self.inputs)
-            .into_iter()
+impl<'a> DispatcherItem<'a> {
+    fn make_fields(&self, ctx_name: &mut Option<Ident>) -> syn::Result<Vec<DispatcherField<'a>>> {
+        self.inputs
+            .iter()
             .filter_map(|fn_arg| DispatcherField::new(fn_arg, &self.kind, ctx_name).transpose())
             .collect::<syn::Result<Vec<_>>>()
     }
 
-    fn expand(mut self, crate_: &TokenStream, model_ty: &Type) -> syn::Result<TokenStream> {
+    fn generate(&self, crate_: &TokenStream, model_ty: &Type) -> syn::Result<TokenStream> {
         let mut ctx_name = None;
         let fields = self.make_fields(&mut ctx_name)?;
         let field_names = fields.iter().map(|f| &f.name).collect::<Vec<_>>();
-        let name = self.args.name.unwrap_or_else(|| {
+        let name = self.args.name.clone().unwrap_or_else(|| {
             Ident::new(&ccase!(pascal, self.name.to_string()), Span::call_site())
         });
         let attrs = &self.attrs;
@@ -261,7 +338,7 @@ impl DispatcherItem {
                 #(#fields),*
             }
         };
-        match self.kind {
+        match &self.kind {
             DispatcherItemKind::Updater => Ok(quote! {
                 #struct_decl
                 impl #impl_generics #crate_::ModelMessage for #name #ty_generics #where_clause {}
@@ -291,5 +368,5 @@ impl DispatcherItem {
 }
 
 pub fn build(value: ItemImpl, args: DispatcherArgs) -> syn::Result<TokenStream> {
-    DispatcherContext::new(value, args)?.expand()
+    DispatcherContext::new(&value, args)?.generate()
 }
