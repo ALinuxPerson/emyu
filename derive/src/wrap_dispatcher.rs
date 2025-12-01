@@ -7,6 +7,7 @@ use syn::spanned::Spanned;
 use syn::{
     Attribute, Expr, FnArg, Pat, ReturnType, Signature, Token, Type, Visibility, braced, token,
 };
+use crate::crate_;
 
 fn extract_args(inputs: &Punctuated<FnArg, Token![,]>) -> Punctuated<Ident, Token![,]> {
     let mut args = Punctuated::new();
@@ -50,7 +51,7 @@ impl DispatcherDef {
         let impl_wrapped_dispatcher_for_ty = quote! {
             impl #crate_::WrappedDispatcher for #name {
                 type Model = #model_ty;
-                
+
                 fn __new(dispatcher: #crate_::Dispatcher<Self::Model>, _: #crate_::dispatcher::__private::Token) -> Self {
                     Self(dispatcher)
                 }
@@ -71,22 +72,22 @@ impl DispatcherDef {
                         type Updater = #updater_name;
                         type Getter = #getter_name;
                     }
-                    
+
                     #(#updater_attrs)*
                     #vis struct #updater_name(#name);
 
                     impl #updater_name {
                         #(#updater_methods)*
                     }
-                    
+
                     impl #crate_::WrappedUpdater for #updater_name {
                         type WrappedDispatcher = #name;
-                        
+
                         fn __new(dispatcher: Self::WrappedDispatcher, _: #crate_::dispatcher::__private::Token) -> Self {
                             Self(dispatcher)
                         }
                     }
-                    
+
                     impl #crate_::dispatcher::__private::Sealed for #updater_name {}
 
                     #(#getter_attrs)*
@@ -95,7 +96,7 @@ impl DispatcherDef {
                     impl #getter_name {
                         #(#getter_methods)*
                     }
-                    
+
                     impl #crate_::WrappedGetter for #getter_name {
                         type WrappedDispatcher = #name;
 
@@ -103,7 +104,7 @@ impl DispatcherDef {
                             Self(dispatcher)
                         }
                     }
-                    
+
                     impl #crate_::dispatcher::__private::Sealed for #getter_name {}
                 }
             })
@@ -303,15 +304,6 @@ impl Parse for DispatcherDef {
             methods.push(content.parse()?)
         }
 
-        let crate_ = match crate_name("vye").expect("`vye` crate should be present in `Cargo.toml`")
-        {
-            FoundCrate::Itself => quote! { crate },
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote! { #ident }
-            }
-        };
-
         Ok(Self {
             ty_attrs,
             vis,
@@ -319,7 +311,7 @@ impl Parse for DispatcherDef {
             model_ty,
             updater_getter_defs,
             methods,
-            crate_,
+            crate_: crate_(),
         })
     }
 }
