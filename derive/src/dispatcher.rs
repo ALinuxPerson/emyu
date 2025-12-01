@@ -52,7 +52,7 @@ impl DispatcherContext {
 
 enum DispatcherItemKind {
     Updater,
-    Getter { data_ty: Type },
+    Getter { data_ty: Box<Type> },
 }
 
 struct DispatcherItem {
@@ -61,7 +61,7 @@ struct DispatcherItem {
     vis: Visibility,
     name: Ident,
 
-    // todo: generics support for updaters
+    // todo: generics support for dispatchers
     generics: Generics,
 
     inputs: Punctuated<FnArg, Token![,]>,
@@ -89,7 +89,7 @@ impl DispatcherItem {
                     break;
                 } else {
                     let data_ty = match &value.sig.output {
-                        ReturnType::Type(_, ty) => *ty.clone(),
+                        ReturnType::Type(_, ty) => ty.clone(),
                         ReturnType::Default => {
                             return Err(syn::Error::new_spanned(
                                 value.sig.output,
@@ -173,7 +173,7 @@ impl DispatcherItem {
             })
             .collect()
     }
-    
+
     fn expand(mut self, crate_: &TokenStream, model_ty: &Type) -> syn::Result<TokenStream> {
         let mut ctx_name = None;
         let fields = self.make_fields(&mut ctx_name);
