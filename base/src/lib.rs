@@ -103,7 +103,7 @@ pub mod handle {
         A: Application,
         WD: WrappedDispatcher<Model = A::RootModel>,
     {
-        pub fn should_refresh(&self) -> impl Stream<Item = A::RegionId> {
+        pub fn should_refresh(&self) -> impl Stream<Item = A::RegionId> + 'static {
             match self.should_refresh.take() {
                 Some(subscriber) => Either::Left(subscriber),
                 None => {
