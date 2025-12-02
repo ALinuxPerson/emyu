@@ -120,7 +120,10 @@ enum MethodKind {
     /// fn new() -> Self
     Constructor,
     /// fn split(self) -> (Updater, Getter)
-    Splitter { updater: Ident, getter: Ident },
+    Splitter {
+        updater: Option<Ident>,
+        getter: Option<Ident>,
+    },
     /// &mut self
     Updater { context_arg: Option<Ident> },
     /// &self
@@ -156,7 +159,12 @@ struct DispatcherContext<'a> {
     handlers: Vec<ParsedMethod<'a>>,
 
     constructor: Option<(&'a Visibility, Vec<&'a Attribute>)>,
-    splitter: Option<(&'a Visibility, Vec<&'a Attribute>, Ident, Ident)>,
+    splitter: Option<(
+        &'a Visibility,
+        Vec<&'a Attribute>,
+        Option<Ident>,
+        Option<Ident>,
+    )>,
 }
 
 // ==================================================================================
@@ -187,10 +195,7 @@ impl<'a> DispatcherContext<'a> {
                 MethodKind::Constructor => {
                     constructor = Some((parsed.vis, parsed.attrs));
                 }
-                MethodKind::Splitter {
-                    updater,
-                    getter,
-                } => {
+                MethodKind::Splitter { updater, getter } => {
                     splitter = Some((parsed.vis, parsed.attrs, updater, getter));
                 }
                 MethodKind::Updater { .. } | MethodKind::Getter { .. } => {
@@ -342,11 +347,8 @@ impl MethodKind {
                     None
                 }
             };
-            if let (Some(updater), Some(getter)) =
-                (get_ident(&tuple.elems[0]), get_ident(&tuple.elems[1]))
-            {
-                return Ok(Self::Splitter { updater, getter });
-            }
+            let (updater, getter) = (get_ident(&tuple.elems[0]), get_ident(&tuple.elems[1]));
+            return Ok(Self::Splitter { updater, getter });
         }
 
         // 3. Check Receiver (&self vs &mut self)
@@ -466,8 +468,12 @@ impl<'a> DispatcherContext<'a> {
             let split_impl = self.generate_split_impl(
                 args,
                 &dispatcher_name,
-                updater_name,
-                getter_name,
+                updater_name
+                    .clone()
+                    .unwrap_or_else(|| format_ident!("{}Updater", self.model_name)),
+                getter_name
+                    .clone()
+                    .unwrap_or_else(|| format_ident!("{}Getter", self.model_name)),
                 split_vis,
                 split_attrs,
             )?;
@@ -481,8 +487,8 @@ impl<'a> DispatcherContext<'a> {
         &self,
         args: &GenerateDispatcherArgs,
         dispatcher_name: &Ident,
-        updater_name: &Ident,
-        getter_name: &Ident,
+        updater_name: Ident,
+        getter_name: Ident,
         split_vis: &Visibility,
         split_attrs: &[&Attribute],
     ) -> syn::Result<TokenStream> {
@@ -639,13 +645,14 @@ impl<'a> ParsedMethod<'a> {
 
         let args = self.generate_args();
         let field_names = self.fields.iter().map(|f| f.name).collect::<Vec<_>>();
+        let field_tys = self.fields.iter().map(|f| f.ty);
         let closure_construction = quote! { #struct_name { #(#field_names),* } };
 
         match &self.kind {
             MethodKind::Updater { .. } => {
                 quote! {
                     #vis async fn #fn_name(&mut self, #(#args),*) {
-                        let f: fn(_) -> #struct_name = |#(#field_names),*| #closure_construction;
+                        let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
                         self.0.send(f(#(#field_names),*)).await
                     }
                 }
@@ -653,7 +660,7 @@ impl<'a> ParsedMethod<'a> {
             MethodKind::Getter { return_ty } => {
                 quote! {
                     #vis async fn #fn_name(&mut self, #(#args),*) -> #return_ty {
-                        let f: fn(_) -> #struct_name = |#(#field_names),*| #closure_construction;
+                        let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
                         self.0.get(f(#(#field_names),*)).await
                     }
                 }
