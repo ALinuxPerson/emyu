@@ -1,7 +1,6 @@
 use crate::base::{Application, Command, Model};
-use crate::{Dispatcher, ModelHandler, ModelMessage, ModelWithRegion, Updater};
+use crate::{Dispatcher, ModelBase, ModelHandler, ModelMessage, ModelWithRegion, Updater};
 use futures::channel::mpsc;
-use futures::future::BoxFuture;
 use futures::{SinkExt, Stream, StreamExt};
 use std::any::type_name;
 use std::collections::{HashSet, VecDeque};
@@ -71,7 +70,7 @@ impl<'rt, A: Application> UpdateContext<'rt, A> {
 }
 
 pub struct ApplyContext<'rt, A: Application> {
-    pub model: &'rt A::RootModel,
+    pub model: &'rt ModelBase<A::RootModel>,
     pub world: &'rt mut World,
     pub updater: Updater<A::RootModel>,
 }
@@ -111,23 +110,17 @@ impl<A: Application> Stream for ShouldRefreshSubscriber<A> {
 }
 
 pub(crate) type UpdateAction<M> =
-    Box<dyn FnOnce(&mut M, &mut UpdateContext<<M as Model>::ForApp>) + Send>;
-pub(crate) type GetterAction<M> = Box<dyn for<'a> FnOnce(&'a M) -> BoxFuture<'a, ()> + Send>;
-
-pub(crate) enum Action<M: Model> {
-    Update(UpdateAction<M>),
-    Getter(GetterAction<M>),
-}
+    Box<dyn FnOnce(ModelBase<M>, &mut UpdateContext<<M as Model>::ForApp>) + Send>;
 
 pub struct MvuRuntime<A: Application> {
-    model: A::RootModel,
+    model: ModelBase<A::RootModel>,
     world: World,
 
     queue: CommandQueue<A>,
     dirty_regions: DirtyRegions<A>,
 
     dispatcher: Dispatcher<A::RootModel>,
-    action_rx: mpsc::Receiver<Action<A::RootModel>>,
+    update_actions_rx: mpsc::Receiver<UpdateAction<A::RootModel>>,
 
     should_refresh_tx: mpsc::Sender<A::RegionId>,
 }
@@ -161,9 +154,8 @@ impl<A: Application> MvuRuntime<A> {
     }
 
     async fn run_once(&mut self) -> ControlFlow<()> {
-        match self.action_rx.next().await {
-            Some(Action::Update(action)) => self.handle_update(action).await,
-            Some(Action::Getter(action)) => self.handle_getter(action).await,
+        match self.update_actions_rx.next().await {
+            Some(action) => self.handle_update(action).await,
             None => return ControlFlow::Break(()),
         };
 
@@ -175,7 +167,7 @@ impl<A: Application> MvuRuntime<A> {
             queue: &mut self.queue,
             dirty_regions: &mut self.dirty_regions,
         };
-        action(&mut self.model, &mut update_ctx);
+        action(self.model.clone(), &mut update_ctx);
 
         let (updater, _) = self.dispatcher.clone().split();
         let mut command_ctx = ApplyContext {
@@ -198,10 +190,6 @@ impl<A: Application> MvuRuntime<A> {
                 }
             }
         }
-    }
-
-    async fn handle_getter(&self, action: GetterAction<A::RootModel>) {
-        action(&self.model).await
     }
 }
 
@@ -298,18 +286,19 @@ impl<A: Application> MvuRuntimeBuilder<A> {
 
     pub fn build(self) -> (MvuRuntime<A>, ShouldRefreshSubscriber<A>) {
         let model = self.model.expect("RootModel was not initialized");
+        let model = ModelBase::new(model);
 
         let (action_tx, action_rx) = mpsc::channel(self.buffer_size);
         let (should_refresh_tx, should_refresh_rx) = mpsc::channel(self.buffer_size);
 
         (
             MvuRuntime {
-                model,
+                model: model.clone(),
                 world: self.world,
                 queue: CommandQueue::default(),
                 dirty_regions: DirtyRegions::default(),
-                dispatcher: Dispatcher::new_root(action_tx),
-                action_rx,
+                dispatcher: Dispatcher::new_root(action_tx, model),
+                update_actions_rx: action_rx,
                 should_refresh_tx,
             },
             ShouldRefreshSubscriber(should_refresh_rx),

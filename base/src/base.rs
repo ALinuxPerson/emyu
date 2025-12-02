@@ -1,10 +1,11 @@
-use thiserror::Error;
 use crate::dispatcher::MvuRuntimeChannelClosedError;
 use crate::runtime::{ApplyContext, UpdateContext};
 use async_trait::async_trait;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use thiserror::Error;
 
 pub trait Application: 'static {
     type RootModel: Model<ForApp = Self>;
@@ -76,3 +77,63 @@ impl From<ModelGetterChannelClosedError> for Error {
 #[non_exhaustive]
 #[error("the channel to the model getter is closed")]
 pub struct ModelGetterChannelClosedError;
+
+pub struct ModelBase<M>(Arc<RwLock<M>>);
+
+impl<M> ModelBase<M> {
+    pub fn new(model: M) -> Self {
+        Self(Arc::new(RwLock::new(model)))
+    }
+
+    pub fn read(&self) -> RwLockReadGuard<'_, M> {
+        self.0.read().unwrap()
+    }
+
+    pub fn write(&self) -> RwLockWriteGuard<'_, M> {
+        self.0.write().unwrap()
+    }
+}
+
+pub type Lens<Parent, Child> = fn(&Parent) -> &ModelBase<Child>;
+
+#[macro_export]
+macro_rules! lens {
+    ($parent:ty => $child:ident) => {
+        // $crate::dispatcher:FnLens::<$parent, _> {
+        //     get: |parent| &parent.$child,
+        //     get_mut: |parent| &mut parent.$child,
+        // }
+        |parent: $parent| &parent.$child
+    };
+}
+
+impl<M: Model> ModelBase<M> {
+    pub fn update<Msg>(&self, message: Msg, ctx: &mut UpdateContext<M::ForApp>)
+    where
+        Msg: ModelMessage,
+        M: ModelHandler<Msg>,
+    {
+        self.write().update(message, ctx)
+    }
+
+    pub fn getter<Msg>(&self, message: Msg) -> Msg::Data
+    where
+        Msg: ModelGetterMessage,
+        M: ModelGetterHandler<Msg>,
+    {
+        self.read().getter(message)
+    }
+
+    pub fn zoom<Child>(&self, lens: Lens<M, Child>) -> ModelBase<Child>
+    where
+        Child: Model<ForApp = M::ForApp>,
+    {
+        lens(&*self.read()).clone()
+    }
+}
+
+impl<M> Clone for ModelBase<M> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}

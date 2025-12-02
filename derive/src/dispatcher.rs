@@ -1,12 +1,12 @@
-use crate::{crate_, utils};
 use crate::utils::{InterfaceImpl, MaybeStubFn};
+use crate::{crate_, utils};
 use convert_case::{Case, Casing};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Attribute, Block, FnArg, MetaList, Pat, PatIdent, PatType, PathArguments,
-    ReturnType, Signature, Token, Type, TypePath, Visibility,
+    Attribute, Block, FnArg, MetaList, Pat, PatIdent, PatType, PathArguments, ReturnType,
+    Signature, Token, Type, TypePath, Visibility,
 };
 // ==================================================================================
 // Utilities & Helpers
@@ -270,12 +270,7 @@ struct DispatcherContext<'a> {
     handlers: Vec<ParsedMethod<'a>>,
 
     constructor: Option<(Visibility, Vec<&'a Attribute>)>,
-    splitter: Option<(
-        Visibility,
-        Vec<&'a Attribute>,
-        Option<Ident>,
-        Option<Ident>,
-    )>,
+    splitter: Option<(Visibility, Vec<&'a Attribute>, Option<Ident>, Option<Ident>)>,
 }
 
 // ==================================================================================
@@ -796,9 +791,9 @@ impl<'a> ParsedMethod<'a> {
             }),
             MethodKind::Getter { return_ty } => Ok(quote! {
                 #(#dispatcher_attrs)*
-                #vis async fn #fn_name(&mut self, #(#args),*) -> #return_ty {
+                #vis fn #fn_name(&mut self, #(#args),*) -> #return_ty {
                     let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
-                    self.0.get(f(#(#field_names),*)).await
+                    self.0.get(f(#(#field_names),*))
                 }
             }),
             _ => Ok(TokenStream::new()),
@@ -812,18 +807,31 @@ impl<'a> ParsedMethod<'a> {
 
         let args = self.generate_args();
         let field_names = self.fields.iter().map(|f| f.name);
-        let (return_type, attrs) = match &self.kind {
-            MethodKind::Getter { return_ty } => {
-                (quote! { -> #return_ty }, self.args.getter_attrs()?)
-            }
-            MethodKind::Updater { .. } => (TokenStream::new(), self.args.updater_attrs()?),
-            _ => (TokenStream::new(), Vec::new()),
+        let (return_type, attrs, async_, dot_await) = match &self.kind {
+            MethodKind::Getter { return_ty } => (
+                quote! { -> #return_ty },
+                self.args.getter_attrs()?,
+                TokenStream::new(),
+                TokenStream::new(),
+            ),
+            MethodKind::Updater { .. } => (
+                TokenStream::new(),
+                self.args.updater_attrs()?,
+                quote! { async },
+                quote! { .await },
+            ),
+            _ => (
+                TokenStream::new(),
+                Vec::new(),
+                TokenStream::new(),
+                TokenStream::new(),
+            ),
         };
 
         Ok(quote! {
             #(#attrs)*
-            #vis async fn #fn_name(&mut self, #(#args),*) #return_type {
-                self.0.#fn_name(#(#field_names),*).await
+            #vis #async_ fn #fn_name(&mut self, #(#args),*) #return_type {
+                self.0.#fn_name(#(#field_names),*) #dot_await
             }
         })
     }
