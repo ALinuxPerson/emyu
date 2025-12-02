@@ -1,14 +1,3 @@
-mod wrap_dispatcher;
-mod message {
-    use darling::FromMeta;
-    use proc_macro2::Ident;
-
-    #[derive(FromMeta)]
-    #[darling(derive_syn_parse)]
-    pub struct MessageArgs {
-        name: Option<Ident>,
-    }
-}
 mod dispatcher;
 mod utils;
 
@@ -27,15 +16,6 @@ fn crate_() -> proc_macro2::TokenStream {
     }
 }
 
-#[proc_macro]
-pub fn wrap_dispatcher(input: TokenStream) -> TokenStream {
-    let def = syn::parse_macro_input!(input as wrap_dispatcher::DispatcherDef);
-    match def.expand() {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
 #[proc_macro_attribute]
 pub fn dispatcher(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = syn::parse_macro_input!(args as dispatcher::DispatcherArgs);
@@ -44,10 +24,4 @@ pub fn dispatcher(args: TokenStream, input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
-}
-
-#[proc_macro_attribute]
-pub fn message(args: TokenStream, input: TokenStream) -> TokenStream {
-    let _args = syn::parse_macro_input!(args as message::MessageArgs);
-    input
 }
