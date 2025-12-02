@@ -11,7 +11,7 @@ pub trait Application: 'static {
     type RegionId: Debug + Eq + Hash + Send + Sync;
 }
 
-pub struct AdHocApp<RootModel, RegionId>(PhantomData<(RootModel, RegionId)>);
+pub struct AdHocApp<RootModel, RegionId = ()>(PhantomData<(RootModel, RegionId)>);
 
 impl<RootModel, RegionId> Application for AdHocApp<RootModel, RegionId>
 where

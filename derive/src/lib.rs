@@ -10,6 +10,7 @@ mod message {
     }
 }
 mod dispatcher;
+mod utils;
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -38,7 +39,7 @@ pub fn wrap_dispatcher(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn dispatcher(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = syn::parse_macro_input!(args as dispatcher::DispatcherArgs);
-    let input = syn::parse_macro_input!(input as syn::ItemImpl);
+    let input = syn::parse_macro_input!(input as utils::InterfaceImpl);
     match dispatcher::build(input, args) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),

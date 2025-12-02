@@ -1,4 +1,5 @@
 use crate::crate_;
+use crate::utils::{InterfaceImpl, MaybeStubFn};
 use convert_case::{Case, Casing};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, Span, TokenStream};
@@ -7,7 +8,6 @@ use syn::{
     Attribute, Block, FnArg, ImplItem, ItemImpl, MetaList, Pat, PatIdent, PatType, PathArguments,
     ReturnType, Signature, Type, TypePath, Visibility,
 };
-
 // ==================================================================================
 // Utilities & Helpers
 // ==================================================================================
@@ -231,7 +231,7 @@ struct ParsedMethod<'a> {
     attrs: Vec<&'a Attribute>,
     vis: &'a Visibility,
     sig: &'a Signature,
-    block: &'a Block,
+    block: Option<&'a Block>,
     fields: Vec<ParsedField<'a>>,
 }
 
@@ -267,24 +267,14 @@ struct DispatcherContext<'a> {
 // ==================================================================================
 
 impl<'a> DispatcherContext<'a> {
-    fn new(item_impl: &'a ItemImpl, args: DispatcherArgs) -> syn::Result<Self> {
-        let model_name = get_model_name(&item_impl.self_ty)?;
+    fn new(interface_impl: &'a InterfaceImpl, args: DispatcherArgs) -> syn::Result<Self> {
+        let model_name = get_model_name(&interface_impl.self_ty)?;
         let mut handlers = Vec::new();
         let mut constructor = None;
         let mut splitter = None;
 
-        for item in &item_impl.items {
-            let method = match item {
-                ImplItem::Fn(m) => m,
-                _ => {
-                    return Err(syn::Error::new_spanned(
-                        item,
-                        "Only functions are allowed in `#[vye::dispatcher]`",
-                    ));
-                }
-            };
-
-            let parsed = ParsedMethod::new(method)?;
+        for item in &interface_impl.items {
+            let parsed = ParsedMethod::new(item)?;
 
             match parsed.kind {
                 MethodKind::Constructor => {
@@ -302,7 +292,7 @@ impl<'a> DispatcherContext<'a> {
         Ok(Self {
             args,
             crate_root: crate_(),
-            model_ty: &item_impl.self_ty,
+            model_ty: &interface_impl.self_ty,
             model_name,
             handlers,
             constructor,
@@ -312,11 +302,12 @@ impl<'a> DispatcherContext<'a> {
 }
 
 impl<'a> ParsedMethod<'a> {
-    fn new(func: &'a syn::ImplItemFn) -> syn::Result<Self> {
+    fn new(func: &'a MaybeStubFn) -> syn::Result<Self> {
         validate_signature(&func.sig)?;
 
+        let block = func.block.as_ref();
         let (attrs, args) = extract_vye_attrs(&func.attrs)?;
-        let kind = MethodKind::determine(&func.sig, &func.block)?;
+        let kind = MethodKind::determine(&func.sig, block)?;
 
         // Parse arguments into fields (skipping self and context)
         let mut fields = Vec::new();
@@ -353,7 +344,7 @@ impl<'a> ParsedMethod<'a> {
             attrs,
             vis: &func.vis,
             sig: &func.sig,
-            block: &func.block,
+            block,
             fields,
         })
     }
@@ -421,16 +412,16 @@ fn validate_signature(sig: &Signature) -> syn::Result<()> {
 }
 
 impl MethodKind {
-    fn determine(sig: &Signature, block: &Block) -> syn::Result<Self> {
+    fn determine(sig: &Signature, block: Option<&Block>) -> syn::Result<Self> {
         // 1. Check for `new` (Constructor)
-        if sig.ident == "new" && sig.inputs.is_empty() && block.stmts.is_empty() {
+        if sig.ident == "new" && sig.inputs.is_empty() && block.is_none() {
             return Ok(Self::Constructor);
         }
 
         // 2. Check for `split`
         if sig.ident == "split"
             && sig.inputs.is_empty()
-            && block.stmts.is_empty()
+            && block.is_none()
             && let ReturnType::Type(_, ty) = &sig.output
             && let Type::Tuple(tuple) = &**ty
             && tuple.elems.len() == 2
@@ -499,7 +490,7 @@ impl<'a> DispatcherContext<'a> {
             .handlers
             .iter()
             .map(|h| h.generate_message_struct(&self.crate_root, self.model_ty))
-            .collect::<Vec<_>>();
+            .collect::<syn::Result<Vec<_>>>()?;
 
         let output_items = quote! { #(#messages)* };
 
@@ -669,7 +660,11 @@ impl<'a> DispatcherContext<'a> {
 
 impl<'a> ParsedMethod<'a> {
     /// Generates the Message struct and the ModelHandler/ModelGetterHandler impl
-    fn generate_message_struct(&self, crate_: &TokenStream, model_ty: &Type) -> TokenStream {
+    fn generate_message_struct(
+        &self,
+        crate_: &TokenStream,
+        model_ty: &Type,
+    ) -> syn::Result<TokenStream> {
         let struct_name = self.struct_name();
         let field_defs = self.fields.iter().map(|f| f.to_token_stream());
         let field_names = self.fields.iter().map(|f| f.name);
@@ -693,7 +688,7 @@ impl<'a> ParsedMethod<'a> {
                     .map(|i| quote! { #i })
                     .unwrap_or_else(|| quote! { _ });
 
-                quote! {
+                Ok(quote! {
                     #struct_def
                     impl #impl_gen #crate_::ModelMessage for #struct_name #ty_gen #where_clause {}
                     impl #impl_gen #crate_::ModelHandler<#struct_name> for #model_ty #ty_gen #where_clause {
@@ -705,23 +700,21 @@ impl<'a> ParsedMethod<'a> {
                             #block
                         }
                     }
-                }
+                })
             }
             MethodKind::Getter { return_ty } => {
                 let field_name = &self.sig.ident;
-                let block = if block.stmts.is_empty() {
+                let block = if block.is_none() {
                     if self.args.copy {
                         quote! { self.#field_name }
-                    } else if self.args.clone {
-                        quote! { self.#field_name.clone() }
                     } else {
-                        quote! { #block }
+                        quote! { self.#field_name.clone() }
                     }
                 } else {
                     quote! { #block }
                 };
 
-                quote! {
+                Ok(quote! {
                     #struct_def
                     impl #impl_gen #crate_::ModelGetterMessage for #struct_name #ty_gen #where_clause {
                         type Data = #return_ty;
@@ -731,9 +724,9 @@ impl<'a> ParsedMethod<'a> {
                             #block
                         }
                     }
-                }
+                })
             }
-            _ => TokenStream::new(), // Constructors/Splitters don't generate message structs
+            _ => Ok(TokenStream::new()), // Constructors/Splitters don't generate message structs
         }
     }
 
@@ -761,24 +754,20 @@ impl<'a> ParsedMethod<'a> {
         let dispatcher_attrs = self.args.dispatcher_attrs()?;
 
         match &self.kind {
-            MethodKind::Updater { .. } => {
-                Ok(quote! {
-                    #(#dispatcher_attrs)*
-                    #vis async fn #fn_name(&mut self, #(#args),*) {
-                        let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
-                        self.0.send(f(#(#field_names),*)).await
-                    }
-                })
-            }
-            MethodKind::Getter { return_ty } => {
-                Ok(quote! {
-                    #(#dispatcher_attrs)*
-                    #vis async fn #fn_name(&mut self, #(#args),*) -> #return_ty {
-                        let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
-                        self.0.get(f(#(#field_names),*)).await
-                    }
-                })
-            }
+            MethodKind::Updater { .. } => Ok(quote! {
+                #(#dispatcher_attrs)*
+                #vis async fn #fn_name(&mut self, #(#args),*) {
+                    let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
+                    self.0.send(f(#(#field_names),*)).await
+                }
+            }),
+            MethodKind::Getter { return_ty } => Ok(quote! {
+                #(#dispatcher_attrs)*
+                #vis async fn #fn_name(&mut self, #(#args),*) -> #return_ty {
+                    let f: fn(#(#field_tys),*) -> #struct_name = |#(#field_names),*| #closure_construction;
+                    self.0.get(f(#(#field_names),*)).await
+                }
+            }),
             _ => Ok(TokenStream::new()),
         }
     }
@@ -791,7 +780,9 @@ impl<'a> ParsedMethod<'a> {
         let args = self.generate_args();
         let field_names = self.fields.iter().map(|f| f.name);
         let (return_type, attrs) = match &self.kind {
-            MethodKind::Getter { return_ty } => (quote! { -> #return_ty }, self.args.getter_attrs()?),
+            MethodKind::Getter { return_ty } => {
+                (quote! { -> #return_ty }, self.args.getter_attrs()?)
+            }
             MethodKind::Updater { .. } => (TokenStream::new(), self.args.updater_attrs()?),
             _ => (TokenStream::new(), Vec::new()),
         };
@@ -819,6 +810,6 @@ impl<'a> ToTokens for ParsedField<'a> {
     }
 }
 
-pub fn build(item_impl: ItemImpl, args: DispatcherArgs) -> syn::Result<TokenStream> {
-    DispatcherContext::new(&item_impl, args)?.generate()
+pub fn build(interface_impl: InterfaceImpl, args: DispatcherArgs) -> syn::Result<TokenStream> {
+    DispatcherContext::new(&interface_impl, args)?.generate()
 }
