@@ -1,44 +1,31 @@
 use crate::crate_;
-use convert_case::ccase;
+use convert_case::{Case, Casing};
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{ToTokens, quote};
-use std::ops::ControlFlow;
+use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Attribute, Block, Field, FieldMutability, FnArg, Generics, ImplItem, ItemImpl, MetaList, Pat,
-    PatIdent, PatType, PathArguments, ReturnType, Signature, Token, Type, TypePath, Visibility,
+    Attribute, Block, FnArg, ImplItem, ItemImpl, MetaList, Pat, PatIdent, PatType, PathArguments,
+    ReturnType, Signature, Type, TypePath, Visibility,
 };
 
-fn parse_then_filter<T: FromAttributes>(
+// ==================================================================================
+// Utilities & Helpers
+// ==================================================================================
+
+/// Parses attributes into type T, returning the parsed value and the remaining attributes
+/// (excluding the ones consumed by T, marked by "vye").
+fn extract_vye_attrs<T: FromAttributes>(
     attributes: &[Attribute],
 ) -> syn::Result<(Vec<&Attribute>, T)> {
-    let value = T::from_attributes(&attributes)?;
-    let attributes = attributes
+    let value = T::from_attributes(attributes)?;
+    let remaining_attributes = attributes
         .iter()
         .filter(|attr| !attr.path().is_ident("vye"))
         .collect();
-    Ok((attributes, value))
+    Ok((remaining_attributes, value))
 }
 
-#[derive(FromMeta)]
-struct GenerateDispatcherArgs {
-    #[darling(default)]
-    dispatcher: Option<Ident>,
-
-    #[darling(default)]
-    vis: Option<Visibility>,
-
-    #[darling(multiple, rename = "attr")]
-    attrs: Vec<syn::Meta>,
-
-    #[darling(multiple, rename = "updater_attr")]
-    updater_attrs: Vec<syn::Meta>,
-
-    #[darling(multiple, rename = "getter_attr")]
-    getter_attrs: Vec<syn::Meta>,
-}
-
-fn to_attribute(meta: &syn::Meta) -> syn::Result<TokenStream> {
+fn meta_to_token_stream(meta: &syn::Meta) -> syn::Result<TokenStream> {
     match meta {
         syn::Meta::List(MetaList { tokens, .. }) => Ok(quote! { #[#tokens] }),
         _ => Err(syn::Error::new_spanned(
@@ -48,23 +35,58 @@ fn to_attribute(meta: &syn::Meta) -> syn::Result<TokenStream> {
     }
 }
 
+fn get_model_name(ty: &Type) -> syn::Result<Ident> {
+    match ty {
+        Type::Path(TypePath { path, .. }) => path
+            .segments
+            .last()
+            .ok_or_else(|| syn::Error::new_spanned(ty, "Provided type path has no segments"))
+            .map(|seg| seg.ident.clone()),
+        _ => Err(syn::Error::new_spanned(
+            ty,
+            "Expected a type path for the model type",
+        )),
+    }
+}
+
+// ==================================================================================
+// Argument Structs
+// ==================================================================================
+
+#[derive(FromMeta)]
+struct GenerateDispatcherArgs {
+    #[darling(default)]
+    dispatcher: Option<Ident>,
+    #[darling(default)]
+    vis: Option<Visibility>,
+    #[darling(multiple, rename = "attr")]
+    attrs: Vec<syn::Meta>,
+    #[darling(multiple, rename = "updater_attr")]
+    updater_attrs: Vec<syn::Meta>,
+    #[darling(multiple, rename = "getter_attr")]
+    getter_attrs: Vec<syn::Meta>,
+}
+
 impl GenerateDispatcherArgs {
-    pub fn dispatcher(&self, model_name: &Ident) -> Ident {
+    fn dispatcher_ident(&self, model_name: &Ident) -> Ident {
         self.dispatcher
             .clone()
-            .unwrap_or_else(|| Ident::new(&format!("{model_name}Dispatcher"), Span::call_site()))
+            .unwrap_or_else(|| format_ident!("{model_name}Dispatcher"))
     }
 
-    pub fn attrs(&self) -> syn::Result<Vec<TokenStream>> {
-        self.attrs.iter().map(to_attribute).collect()
+    fn attrs(&self) -> syn::Result<Vec<TokenStream>> {
+        self.attrs.iter().map(meta_to_token_stream).collect()
     }
 
-    pub fn updater_attrs(&self) -> syn::Result<Vec<TokenStream>> {
-        self.updater_attrs.iter().map(to_attribute).collect()
+    fn updater_attrs(&self) -> syn::Result<Vec<TokenStream>> {
+        self.updater_attrs
+            .iter()
+            .map(meta_to_token_stream)
+            .collect()
     }
 
-    pub fn getter_attrs(&self) -> syn::Result<Vec<TokenStream>> {
-        self.getter_attrs.iter().map(to_attribute).collect()
+    fn getter_attrs(&self) -> syn::Result<Vec<TokenStream>> {
+        self.getter_attrs.iter().map(meta_to_token_stream).collect()
     }
 }
 
@@ -74,460 +96,287 @@ pub struct DispatcherArgs {
     generate: Option<GenerateDispatcherArgs>,
 }
 
-struct DispatcherContext<'a> {
-    args: DispatcherArgs,
-    new_fn_vis: &'a Visibility,
-    new_fn_attrs: &'a [Attribute],
-    has_split_fn: bool,
-    split_fn_vis: &'a Visibility,
-    split_fn_attrs: &'a [Attribute],
-    updater_name: Option<Ident>,
-    getter_name: Option<Ident>,
-    crate_: TokenStream,
-    model_ty: &'a Type,
-    model_name: Ident,
-    items: Vec<DispatcherItem<'a>>,
-}
-
-impl<'a> DispatcherContext<'a> {
-    fn new(value: &'a ItemImpl, args: DispatcherArgs) -> syn::Result<Self> {
-        let model_name = match &*value.self_ty {
-            Type::Path(TypePath { path, .. }) => path
-                .segments
-                .last()
-                .ok_or_else(|| {
-                    syn::Error::new_spanned(&value.self_ty, "Provided type path has no segments")
-                })?
-                .ident
-                .clone(),
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    &value.self_ty,
-                    "Expected a type path for the model type",
-                ));
-            }
-        };
-        let mut new_fn_vis = &Visibility::Inherited;
-        let mut new_fn_attrs = &[][..];
-        let mut has_split_fn = false;
-        let mut split_fn_vis = &Visibility::Inherited;
-        let mut split_fn_attrs = &[][..];
-        let mut updater_name = None;
-        let mut getter_name = None;
-        let items = value
-            .items
-            .iter()
-            .filter_map(|value| match DispatcherItem::new(value) {
-                Ok(MaybeDispatcherItem::Is(item)) => Some(Ok(item)),
-                Ok(MaybeDispatcherItem::New { vis, attrs }) => {
-                    new_fn_vis = vis;
-                    new_fn_attrs = attrs;
-                    None
-                }
-                Ok(MaybeDispatcherItem::Split {
-                    vis,
-                    attrs,
-                    updater,
-                    getter,
-                }) => {
-                    has_split_fn = true;
-                    split_fn_vis = vis;
-                    split_fn_attrs = attrs;
-                    updater_name = updater;
-                    getter_name = getter;
-                    None
-                }
-                Err(error) => Some(Err(error)),
-            })
-            .collect::<syn::Result<_>>()?;
-        Ok(Self {
-            args,
-            new_fn_vis,
-            new_fn_attrs,
-            has_split_fn,
-            split_fn_vis,
-            split_fn_attrs,
-            updater_name,
-            getter_name,
-            crate_: crate_(),
-            model_ty: &value.self_ty,
-            model_name,
-            items,
-        })
-    }
-
-    fn generate(&self) -> syn::Result<TokenStream> {
-        let model_ty = &self.model_ty;
-        let items = self
-            .items
-            .iter()
-            .map(|item| item.generate(&self.crate_, model_ty))
-            .collect::<syn::Result<Vec<_>>>()?;
-        let items = quote! { #(#items)* };
-
-        if let Some(args) = &self.args.generate {
-            let wrapped_dispatcher = self.generate_wrapped_dispatcher(args)?;
-
-            Ok(quote! {
-                #items
-                #wrapped_dispatcher
-            })
-        } else {
-            Ok(items)
-        }
-    }
-}
-
-impl<'a> DispatcherContext<'a> {
-    fn updater_getter_idents(&self) -> (Ident, Ident) {
-        let updater = self.updater_name.clone().unwrap_or_else(|| {
-            Ident::new(&format!("{}Updater", self.model_name), Span::call_site())
-        });
-        let getter = self.getter_name.clone().unwrap_or_else(|| {
-            Ident::new(&format!("{}Getter", self.model_name), Span::call_site())
-        });
-        (updater, getter)
-    }
-
-    fn generate_dispatcher_fns(&self) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
-        self.items
-            .iter()
-            .map(|item| item.generate_dispatcher_fns())
-            .fold(
-                (Vec::new(), Vec::new(), Vec::new()),
-                |(mut dispatcher_fns, mut updater_fns, mut getter_fns), fns| {
-                    dispatcher_fns.push(fns.dispatcher_fn);
-                    match fns.wrapper_fn {
-                        GeneratedDispatcherWrapperFn::Updater(fn_) => updater_fns.push(fn_),
-                        GeneratedDispatcherWrapperFn::Getter(fn_) => getter_fns.push(fn_),
-                    }
-                    (dispatcher_fns, updater_fns, getter_fns)
-                },
-            )
-    }
-
-    fn generate_wrapped_dispatcher(
-        &self,
-        args: &GenerateDispatcherArgs,
-    ) -> syn::Result<TokenStream> {
-        let crate_ = &self.crate_;
-        let dispatcher_name = args.dispatcher(&self.model_name);
-        let vis = args.vis.as_ref().unwrap_or(&Visibility::Inherited);
-        let attrs = args.attrs()?;
-        let new_fn_vis = self.new_fn_vis;
-        let new_fn_attrs = self.new_fn_attrs;
-        let model_ty = self.model_ty;
-        let mut ret = quote! {
-            #(#attrs)*
-            #vis struct #dispatcher_name(#crate_::Dispatcher<#model_ty>);
-            impl #dispatcher_name {
-                #(#new_fn_attrs)*
-                #new_fn_vis fn new(dispatcher: #crate_::Dispatcher<#model_ty>) -> Self {
-                    #crate_::WrappedDispatcher::__new(dispatcher, #crate_::dispatcher::__private::Token::new())
-                }
-            }
-            impl #crate_::WrappedDispatcher for #dispatcher_name {
-                type Model = #model_ty;
-
-                fn __new(dispatcher: #crate_::Dispatcher<#model_ty>, _: #crate_::dispatcher::__private::Token) -> Self {
-                    Self(dispatcher)
-                }
-            }
-            impl #crate_::dispatcher::__private::Sealed for #dispatcher_name {}
-        };
-        let (dispatcher_fns, updater_fns, getter_fns) = self.generate_dispatcher_fns();
-        ret.extend(quote! {
-            impl #dispatcher_name { #(#dispatcher_fns)* }
-        });
-        if self.has_split_fn {
-            ret.extend(self.generate_updater_getter(
-                args,
-                &dispatcher_name,
-                updater_fns,
-                getter_fns,
-            )?)
-        }
-        Ok(ret)
-    }
-
-    fn generate_updater_getter(
-        &self,
-        args: &GenerateDispatcherArgs,
-        dispatcher_name: &Ident,
-        updater_fns: Vec<TokenStream>,
-        getter_fns: Vec<TokenStream>,
-    ) -> syn::Result<TokenStream> {
-        let crate_ = &self.crate_;
-        let updater_attrs = args.updater_attrs()?;
-        let getter_attrs = args.getter_attrs()?;
-        let (updater_name, getter_name) = self.updater_getter_idents();
-        let new_fn_vis = self.new_fn_vis;
-        let split_fn_vis = self.split_fn_vis;
-        let split_fn_attrs = self.split_fn_attrs;
-        let model_ty = self.model_ty;
-        Ok(quote! {
-            impl #dispatcher_name {
-                #(#split_fn_attrs)*
-                #split_fn_vis fn split(self) -> (#updater_name, #getter_name) {
-                    #crate_::SplittableWrappedDispatcher::__split(self, #crate_::dispatcher::__private::Token::new())
-                }
-            }
-            impl #crate_::SplittableWrappedDispatcher for #dispatcher_name {
-                type Updater = #updater_name;
-                type Getter = #getter_name;
-            }
-
-            #(#updater_attrs)*
-            #split_fn_vis struct #updater_name(#dispatcher_name);
-            impl #crate_::WrappedUpdater for #updater_name {
-                type WrappedDispatcher = #dispatcher_name;
-                fn __new(dispatcher: #dispatcher_name, _: #crate_::dispatcher::__private::Token) -> Self {
-                    Self(dispatcher)
-                }
-            }
-            impl #crate_::dispatcher::__private::Sealed for #updater_name {}
-            impl #updater_name {
-                // todo: add ability to add attributes to new
-                #new_fn_vis fn new(dispatcher: #crate_::Dispatcher<#model_ty>) -> Self {
-                    #crate_::WrappedUpdater::__new(#dispatcher_name::new(dispatcher), #crate_::dispatcher::__private::Token::new())
-                }
-                #(#updater_fns)*
-            }
-
-            #(#getter_attrs)*
-            #split_fn_vis struct #getter_name(#dispatcher_name);
-            impl #crate_::WrappedGetter for #getter_name {
-                type WrappedDispatcher = #dispatcher_name;
-                fn __new(dispatcher: #dispatcher_name, _: #crate_::dispatcher::__private::Token) -> Self {
-                    Self(dispatcher)
-                }
-            }
-            impl #crate_::dispatcher::__private::Sealed for #getter_name {}
-            impl #getter_name {
-                // todo: add ability to add attributes to new
-                #new_fn_vis fn new(dispatcher: #crate_::Dispatcher<#model_ty>) -> Self {
-                    #crate_::WrappedGetter::__new(#dispatcher_name::new(dispatcher), #crate_::dispatcher::__private::Token::new())
-                }
-                #(#getter_fns)*
-            }
-        })
-    }
-}
-
-enum DispatcherItemKind {
-    Updater { ctx_name: Option<Ident> },
-    Getter { data_ty: Box<Type> },
-}
-
 #[derive(FromAttributes, Default)]
 #[darling(attributes(vye))]
-struct DispatcherItemArgs {
+struct MethodArgs {
     #[darling(default)]
     name: Option<Ident>,
-
     #[darling(default)]
     dispatcher: Option<Visibility>,
 }
 
-enum MaybeDispatcherItem<'a> {
-    Is(DispatcherItem<'a>),
-    New {
-        vis: &'a Visibility,
-        attrs: &'a [Attribute],
-    },
-    Split {
-        vis: &'a Visibility,
-        attrs: &'a [Attribute],
-        updater: Option<Ident>,
-        getter: Option<Ident>,
-    },
+#[derive(FromAttributes, Default)]
+#[darling(attributes(vye))]
+struct FieldArgs {
+    #[darling(default)]
+    vis: Option<Visibility>,
 }
 
-struct DispatcherItem<'a> {
-    args: DispatcherItemArgs,
-    kind: DispatcherItemKind,
+// ==================================================================================
+// Core Analysis Structures
+// ==================================================================================
+
+enum MethodKind {
+    /// fn new() -> Self
+    Constructor,
+    /// fn split(self) -> (Updater, Getter)
+    Splitter { updater: Ident, getter: Ident },
+    /// &mut self
+    Updater { context_arg: Option<Ident> },
+    /// &self
+    Getter { return_ty: Box<Type> },
+}
+
+struct ParsedMethod<'a> {
+    args: MethodArgs,
+    kind: MethodKind,
     attrs: Vec<&'a Attribute>,
     vis: &'a Visibility,
-    name: &'a Ident,
-    generics: &'a Generics,
-    fields: Vec<DispatcherField<'a>>,
+    sig: &'a Signature,
     block: &'a Block,
+    fields: Vec<ParsedField<'a>>,
 }
 
-// if &mut self, then updater; if &self, then getter
-fn find_kind(sig: &Signature) -> syn::Result<Option<DispatcherItemKind>> {
-    let mut kind = None;
-    for input in &sig.inputs {
-        if let FnArg::Receiver(receiver) = input {
-            if receiver.mutability.is_some() {
-                kind = Some(DispatcherItemKind::Updater { ctx_name: None });
-                break;
-            } else {
-                let data_ty = match &sig.output {
-                    ReturnType::Type(_, ty) => ty.clone(),
-                    ReturnType::Default => {
-                        return Err(syn::Error::new_spanned(
-                            &sig.output,
-                            "Getter functions must have a return type",
-                        ));
-                    }
-                };
+struct ParsedField<'a> {
+    args: FieldArgs,
+    attrs: Vec<&'a Attribute>,
+    name: &'a Ident,
+    ty: &'a Type,
+}
 
-                kind = Some(DispatcherItemKind::Getter { data_ty });
+struct DispatcherContext<'a> {
+    args: DispatcherArgs,
+    crate_root: TokenStream,
+
+    // Model Info
+    model_ty: &'a Type,
+    model_name: Ident,
+
+    // Parsed Items
+    handlers: Vec<ParsedMethod<'a>>,
+
+    constructor: Option<(&'a Visibility, Vec<&'a Attribute>)>,
+    splitter: Option<(&'a Visibility, Vec<&'a Attribute>, Ident, Ident)>,
+}
+
+// ==================================================================================
+// Analysis Logic (Parsing)
+// ==================================================================================
+
+impl<'a> DispatcherContext<'a> {
+    fn new(item_impl: &'a ItemImpl, args: DispatcherArgs) -> syn::Result<Self> {
+        let model_name = get_model_name(&item_impl.self_ty)?;
+        let mut handlers = Vec::new();
+        let mut constructor = None;
+        let mut splitter = None;
+
+        for item in &item_impl.items {
+            let method = match item {
+                ImplItem::Fn(m) => m,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        item,
+                        "Only functions are allowed in `#[vye::dispatcher]`",
+                    ));
+                }
+            };
+
+            let parsed = ParsedMethod::new(method)?;
+
+            match parsed.kind {
+                MethodKind::Constructor => {
+                    constructor = Some((parsed.vis, parsed.attrs));
+                }
+                MethodKind::Splitter {
+                    updater,
+                    getter,
+                } => {
+                    splitter = Some((parsed.vis, parsed.attrs, updater, getter));
+                }
+                MethodKind::Updater { .. } | MethodKind::Getter { .. } => {
+                    handlers.push(parsed);
+                }
             }
         }
+
+        Ok(Self {
+            args,
+            crate_root: crate_(),
+            model_ty: &item_impl.self_ty,
+            model_name,
+            handlers,
+            constructor,
+            splitter,
+        })
     }
-    Ok(kind)
 }
 
-fn assert_signature_shape(sig: &Signature) -> syn::Result<()> {
+impl<'a> ParsedMethod<'a> {
+    fn new(func: &'a syn::ImplItemFn) -> syn::Result<Self> {
+        validate_signature(&func.sig)?;
+
+        let (attrs, args) = extract_vye_attrs(&func.attrs)?;
+        let kind = MethodKind::determine(&func.sig, &func.block)?;
+
+        // Parse arguments into fields (skipping self and context)
+        let mut fields = Vec::new();
+        let mut context_arg = None;
+
+        for input in &func.sig.inputs {
+            match input {
+                FnArg::Receiver(_) => continue,
+                FnArg::Typed(pat_ty) => {
+                    // Check if this is the generic UpdateContext arg
+                    if matches!(kind, MethodKind::Updater { .. })
+                        && let Some(ctx_ident) = get_update_context_ident(pat_ty)
+                    {
+                        context_arg = Some(ctx_ident.clone());
+                        continue;
+                    }
+
+                    if let Some(field) = ParsedField::new(pat_ty)? {
+                        fields.push(field);
+                    }
+                }
+            }
+        }
+
+        // Update kind with found context arg if it's an updater
+        let kind = match kind {
+            MethodKind::Updater { .. } => MethodKind::Updater { context_arg },
+            k => k,
+        };
+
+        Ok(Self {
+            args,
+            kind,
+            attrs,
+            vis: &func.vis,
+            sig: &func.sig,
+            block: &func.block,
+            fields,
+        })
+    }
+
+    fn struct_name(&self) -> Ident {
+        self.args.name.clone().unwrap_or_else(|| {
+            let name = self.sig.ident.to_string().to_case(Case::Pascal);
+            Ident::new(&name, Span::call_site())
+        })
+    }
+}
+
+impl<'a> ParsedField<'a> {
+    fn new(pat_type: &'a PatType) -> syn::Result<Option<Self>> {
+        let name = match &*pat_type.pat {
+            Pat::Ident(PatIdent { ident, .. }) => ident,
+            _ => return Ok(None),
+        };
+
+        let (attrs, args) = extract_vye_attrs(&pat_type.attrs)?;
+
+        Ok(Some(Self {
+            args,
+            attrs,
+            name,
+            ty: &pat_type.ty,
+        }))
+    }
+}
+
+// --- Analysis Helpers ---
+
+fn validate_signature(sig: &Signature) -> syn::Result<()> {
     if sig.constness.is_some() {
         return Err(syn::Error::new_spanned(
             sig,
             "Dispatcher functions cannot be const",
         ));
     }
-
     if sig.asyncness.is_some() {
         return Err(syn::Error::new_spanned(
             sig,
             "Dispatcher functions cannot be async",
         ));
     }
-
     if sig.unsafety.is_some() {
         return Err(syn::Error::new_spanned(
             sig,
             "Dispatcher functions cannot be unsafe",
         ));
     }
-
     if sig.abi.is_some() {
         return Err(syn::Error::new_spanned(
             sig,
             "Dispatcher functions cannot have a custom ABI",
         ));
     }
-
     if sig.variadic.is_some() {
         return Err(syn::Error::new_spanned(
             sig,
             "Dispatcher functions cannot be variadic",
         ));
     }
-
     Ok(())
 }
 
-fn find_new_or_split<'a>(
-    vis: &'a Visibility,
-    attrs: &'a [Attribute],
-    sig: &Signature,
-    block: &Block,
-) -> syn::Result<Option<MaybeDispatcherItem<'a>>> {
-    // must not have any function arguments nor does its body contain anything i.e. fn new() {}
-    if !sig.inputs.is_empty() || !block.stmts.is_empty() {
-        return Ok(None);
-    }
+impl MethodKind {
+    fn determine(sig: &Signature, block: &Block) -> syn::Result<Self> {
+        // 1. Check for `new` (Constructor)
+        if sig.ident == "new" && sig.inputs.is_empty() && block.stmts.is_empty() {
+            return Ok(Self::Constructor);
+        }
 
-    if sig.ident == "new" && matches!(sig.output, ReturnType::Default) {
-        Ok(Some(MaybeDispatcherItem::New { vis, attrs }))
-    } else if sig.ident == "split"
-        && let ReturnType::Type(_, ty) = &sig.output
-        && let Type::Tuple(tuple) = &**ty
-        && tuple.elems.len() == 2
-    {
-        let get_ident = |ty: &Type| match ty {
-            Type::Path(ty) => match ty.path.segments.last() {
-                Some(segment) => ControlFlow::Continue(Some(segment.ident.clone())),
-                None => ControlFlow::Break(Ok(None)),
-            },
-            Type::Infer(_) => ControlFlow::Continue(None),
-            _ => ControlFlow::Break(Ok(None)),
-        };
-        let updater = match get_ident(&tuple.elems[0]) {
-            ControlFlow::Continue(ident) => ident,
-            ControlFlow::Break(other) => return other,
-        };
-        let getter = match get_ident(&tuple.elems[1]) {
-            ControlFlow::Continue(ident) => ident,
-            ControlFlow::Break(other) => return other,
-        };
-        Ok(Some(MaybeDispatcherItem::Split {
-            vis,
-            attrs,
-            updater,
-            getter,
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
-impl<'a> DispatcherItem<'a> {
-    #![allow(clippy::new_ret_no_self)]
-    fn new(value: &'a ImplItem) -> syn::Result<MaybeDispatcherItem<'a>> {
-        let value = match value {
-            ImplItem::Fn(value) => value,
-            other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    format!(
-                        "Only functions are allowed in `#[vye::dispatcher]` blocks, got {other:?}"
-                    ),
-                ));
+        // 2. Check for `split`
+        if sig.ident == "split"
+            && sig.inputs.is_empty()
+            && block.stmts.is_empty()
+            && let ReturnType::Type(_, ty) = &sig.output
+            && let Type::Tuple(tuple) = &**ty
+            && tuple.elems.len() == 2
+        {
+            let get_ident = |t: &Type| -> Option<Ident> {
+                if let Type::Path(p) = t {
+                    p.path.segments.last().map(|s| s.ident.clone())
+                } else {
+                    None
+                }
+            };
+            if let (Some(updater), Some(getter)) =
+                (get_ident(&tuple.elems[0]), get_ident(&tuple.elems[1]))
+            {
+                return Ok(Self::Splitter { updater, getter });
             }
-        };
+        }
 
-        assert_signature_shape(&value.sig)?;
-        let (attrs, args) = parse_then_filter(&value.attrs)?;
-        let kind = match find_kind(&value.sig)? {
-            Some(kind) => kind,
-            None => {
-                return match find_new_or_split(&value.vis, &value.attrs, &value.sig, &value.block)?
-                {
-                    Some(value) => Ok(value),
-                    None => Err(syn::Error::new_spanned(
-                        &value.sig.inputs,
-                        "Dispatcher functions must have a self parameter",
-                    )),
+        // 3. Check Receiver (&self vs &mut self)
+        for input in &sig.inputs {
+            if let FnArg::Receiver(recv) = input {
+                return if recv.mutability.is_some() {
+                    Ok(Self::Updater { context_arg: None })
+                } else {
+                    match &sig.output {
+                        ReturnType::Type(_, ty) => Ok(Self::Getter {
+                            return_ty: ty.clone(),
+                        }),
+                        ReturnType::Default => Err(syn::Error::new_spanned(
+                            &sig.output,
+                            "Getter functions must have a return type",
+                        )),
+                    }
                 };
             }
-        };
-        let mut ctx_name = None;
-        let fields = value
-            .sig
-            .inputs
-            .iter()
-            .filter_map(|fn_arg| {
-                DispatcherField::new(
-                    fn_arg,
-                    matches!(kind, DispatcherItemKind::Updater { .. }),
-                    &mut ctx_name,
-                )
-                .transpose()
-            })
-            .collect::<syn::Result<Vec<_>>>()?;
-        let kind = match kind {
-            DispatcherItemKind::Updater { .. } => DispatcherItemKind::Updater { ctx_name },
-            DispatcherItemKind::Getter { data_ty } => DispatcherItemKind::Getter { data_ty },
-        };
+        }
 
-        Ok(MaybeDispatcherItem::Is(Self {
-            kind,
-            args,
-            attrs,
-            vis: &value.vis,
-            name: &value.sig.ident,
-            generics: &value.sig.generics,
-            fields,
-            block: &value.block,
-        }))
+        Err(syn::Error::new_spanned(
+            &sig.inputs,
+            "Dispatcher functions must have a self parameter (or be new/split)",
+        ))
     }
 }
 
-// must be &mut UpdateContext<App>
-fn is_update_context(pat_ty: &PatType) -> Option<&Ident> {
+/// Helper to detect `&mut UpdateContext<App>`
+fn get_update_context_ident(pat_ty: &PatType) -> Option<&Ident> {
     if let Pat::Ident(PatIdent { ident, .. }) = &*pat_ty.pat
         && let Type::Reference(ty) = &*pat_ty.ty
         && ty.mutability.is_some()
@@ -542,180 +391,316 @@ fn is_update_context(pat_ty: &PatType) -> Option<&Ident> {
     }
 }
 
-#[derive(FromAttributes, Default)]
-#[darling(attributes(vye))]
-struct FieldArgs {
-    #[darling(default)]
-    vis: Option<Visibility>,
-}
+// ==================================================================================
+// Code Generation
+// ==================================================================================
 
-struct DispatcherField<'a> {
-    args: FieldArgs,
-    attrs: Vec<&'a Attribute>,
-    name: &'a Ident,
-    ty: &'a Type,
-}
+impl<'a> DispatcherContext<'a> {
+    fn generate(&self) -> syn::Result<TokenStream> {
+        // 1. Generate Message Structs and their Trait Implementations
+        let messages = self
+            .handlers
+            .iter()
+            .map(|h| h.generate_message_struct(&self.crate_root, self.model_ty))
+            .collect::<Vec<_>>();
 
-impl<'a> DispatcherField<'a> {
-    fn new(
-        fn_arg: &'a FnArg,
-        is_updater: bool,
-        ctx_name: &mut Option<Ident>,
-    ) -> syn::Result<Option<Self>> {
-        match fn_arg {
-            // self type, skip
-            FnArg::Receiver(_) => Ok(None),
-            FnArg::Typed(pat_type) => {
-                // `&mut UpdateContext<App>`, skip
-                if is_updater && let Some(ident) = is_update_context(pat_type) {
-                    *ctx_name = Some(ident.clone());
-                    return Ok(None);
+        let output_items = quote! { #(#messages)* };
+
+        // 2. If 'generate' args are present, generate the Dispatcher wrapper
+        if let Some(gen_args) = &self.args.generate {
+            let dispatcher = self.generate_wrapper(gen_args)?;
+            Ok(quote! {
+                #output_items
+                #dispatcher
+            })
+        } else {
+            Ok(output_items)
+        }
+    }
+
+    fn generate_wrapper(&self, args: &GenerateDispatcherArgs) -> syn::Result<TokenStream> {
+        let crate_ = &self.crate_root;
+        let model_ty = self.model_ty;
+
+        let dispatcher_name = args.dispatcher_ident(&self.model_name);
+        let vis = args.vis.as_ref().unwrap_or(&Visibility::Inherited);
+        let dispatcher_attrs = args.attrs()?;
+
+        // Constructor info
+        let (new_vis, new_attrs) = self
+            .constructor
+            .clone()
+            .unwrap_or((&Visibility::Inherited, Vec::new()));
+
+        // Generate methods for the main dispatcher
+        let dispatcher_methods = self
+            .handlers
+            .iter()
+            .map(|h| h.generate_dispatcher_method())
+            .collect::<Vec<_>>();
+
+        // Core Dispatcher definition
+        let mut tokens = quote! {
+            #(#dispatcher_attrs)*
+            #vis struct #dispatcher_name(#crate_::Dispatcher<#model_ty>);
+
+            impl #dispatcher_name {
+                #(#new_attrs)*
+                #new_vis fn new(dispatcher: #crate_::Dispatcher<#model_ty>) -> Self {
+                    #crate_::WrappedDispatcher::__new(dispatcher, #crate_::dispatcher::__private::Token::new())
                 }
+                #(#dispatcher_methods)*
+            }
 
-                // todo: more sophisticated error handling for this case
-                let Pat::Ident(PatIdent { ident: name, .. }) = &*pat_type.pat else {
-                    return Ok(None);
-                };
+            impl #crate_::WrappedDispatcher for #dispatcher_name {
+                type Model = #model_ty;
+                fn __new(dispatcher: #crate_::Dispatcher<#model_ty>, _: #crate_::dispatcher::__private::Token) -> Self {
+                    Self(dispatcher)
+                }
+            }
+            impl #crate_::dispatcher::__private::Sealed for #dispatcher_name {}
+        };
 
-                let (attrs, field_args) = parse_then_filter(&pat_type.attrs)?;
-                Ok(Some(Self {
-                    args: field_args,
-                    attrs,
-                    name,
-                    ty: &pat_type.ty,
-                }))
+        // If 'split' is defined, generate Updater and Getter wrappers
+        if let Some((split_vis, split_attrs, updater_name, getter_name)) = &self.splitter {
+            let split_impl = self.generate_split_impl(
+                args,
+                &dispatcher_name,
+                updater_name,
+                getter_name,
+                split_vis,
+                split_attrs,
+            )?;
+            tokens.extend(split_impl);
+        }
+
+        Ok(tokens)
+    }
+
+    fn generate_split_impl(
+        &self,
+        args: &GenerateDispatcherArgs,
+        dispatcher_name: &Ident,
+        updater_name: &Ident,
+        getter_name: &Ident,
+        split_vis: &Visibility,
+        split_attrs: &[&Attribute],
+    ) -> syn::Result<TokenStream> {
+        let crate_ = &self.crate_root;
+        let model_ty = self.model_ty;
+        let (new_vis, _) = self
+            .constructor
+            .clone()
+            .unwrap_or((&Visibility::Inherited, Vec::new()));
+
+        // Separate handler methods into updater methods and getter methods
+        let mut updater_fns = Vec::new();
+        let mut getter_fns = Vec::new();
+
+        for handler in &self.handlers {
+            let wrapper_fn = handler.generate_wrapper_method();
+            match handler.kind {
+                MethodKind::Updater { .. } => updater_fns.push(wrapper_fn),
+                MethodKind::Getter { .. } => getter_fns.push(wrapper_fn),
+                _ => {}
             }
         }
-    }
 
-    fn to_field(&self) -> Field {
-        Field {
-            attrs: self.attrs.iter().copied().cloned().collect(),
-            vis: self.args.vis.clone().unwrap_or(Visibility::Inherited),
-            mutability: FieldMutability::None,
-            colon_token: Some(Token![:](self.name.span())),
-            ident: Some(self.name.clone()),
-            ty: self.ty.clone(),
-        }
-    }
-}
+        let updater_attrs = args.updater_attrs()?;
+        let getter_attrs = args.getter_attrs()?;
 
-impl<'a> ToTokens for DispatcherField<'a> {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.to_field().to_tokens(tokens)
-    }
-}
+        Ok(quote! {
+            // Split implementation on Dispatcher
+            impl #dispatcher_name {
+                #(#split_attrs)*
+                #split_vis fn split(self) -> (#updater_name, #getter_name) {
+                    #crate_::SplittableWrappedDispatcher::__split(self, #crate_::dispatcher::__private::Token::new())
+                }
+            }
+            impl #crate_::SplittableWrappedDispatcher for #dispatcher_name {
+                type Updater = #updater_name;
+                type Getter = #getter_name;
+            }
 
-impl<'a> DispatcherItem<'a> {
-    fn name(&self) -> Ident {
-        self.args.name.clone().unwrap_or_else(|| {
-            Ident::new(&ccase!(pascal, self.name.to_string()), Span::call_site())
+            // Updater Struct
+            #(#updater_attrs)*
+            #split_vis struct #updater_name(#dispatcher_name);
+
+            impl #crate_::WrappedUpdater for #updater_name {
+                type WrappedDispatcher = #dispatcher_name;
+                fn __new(dispatcher: #dispatcher_name, _: #crate_::dispatcher::__private::Token) -> Self { Self(dispatcher) }
+            }
+            impl #crate_::dispatcher::__private::Sealed for #updater_name {}
+
+            impl #updater_name {
+                #new_vis fn new(dispatcher: #crate_::Dispatcher<#model_ty>) -> Self {
+                    #crate_::WrappedUpdater::__new(#dispatcher_name::new(dispatcher), #crate_::dispatcher::__private::Token::new())
+                }
+                #(#updater_fns)*
+            }
+
+            // Getter Struct
+            #(#getter_attrs)*
+            #split_vis struct #getter_name(#dispatcher_name);
+
+            impl #crate_::WrappedGetter for #getter_name {
+                type WrappedDispatcher = #dispatcher_name;
+                fn __new(dispatcher: #dispatcher_name, _: #crate_::dispatcher::__private::Token) -> Self { Self(dispatcher) }
+            }
+            impl #crate_::dispatcher::__private::Sealed for #getter_name {}
+
+            impl #getter_name {
+                #new_vis fn new(dispatcher: #crate_::Dispatcher<#model_ty>) -> Self {
+                    #crate_::WrappedGetter::__new(#dispatcher_name::new(dispatcher), #crate_::dispatcher::__private::Token::new())
+                }
+                #(#getter_fns)*
+            }
         })
     }
 }
 
-impl<'a> DispatcherItem<'a> {
-    fn generate(&self, crate_: &TokenStream, model_ty: &Type) -> syn::Result<TokenStream> {
-        let fields = &self.fields;
-        let field_names = fields.iter().map(|f| &f.name).collect::<Vec<_>>();
-        let name = self.name();
+impl<'a> ParsedMethod<'a> {
+    /// Generates the Message struct and the ModelHandler/ModelGetterHandler impl
+    fn generate_message_struct(&self, crate_: &TokenStream, model_ty: &Type) -> TokenStream {
+        let struct_name = self.struct_name();
+        let field_defs = self.fields.iter().map(|f| f.to_token_stream());
+        let field_names = self.fields.iter().map(|f| f.name);
+
         let attrs = &self.attrs;
-        let vis = &self.vis;
-        let block = &self.block;
-        let (impl_generics, ty_generics, where_clause) = self.generics.split_for_impl();
-        let struct_decl = quote! {
+        let vis = self.vis;
+        let block = self.block;
+        let (impl_gen, ty_gen, where_clause) = self.sig.generics.split_for_impl();
+
+        let struct_def = quote! {
             #(#attrs)*
-            #vis struct #name #impl_generics #where_clause {
-                #(#fields),*
+            #vis struct #struct_name #impl_gen #where_clause {
+                #(#field_defs),*
             }
         };
+
         match &self.kind {
-            DispatcherItemKind::Updater { ctx_name } => {
-                let ctx_name = ctx_name
+            MethodKind::Updater { context_arg } => {
+                let ctx_pat = context_arg
                     .as_ref()
-                    .cloned()
-                    .unwrap_or_else(|| Token![_](Span::call_site()).into());
-                Ok(quote! {
-                    #struct_decl
-                    impl #impl_generics #crate_::ModelMessage for #name #ty_generics #where_clause {}
-                    impl #impl_generics #crate_::ModelHandler<#name> for #model_ty #ty_generics #where_clause {
+                    .map(|i| quote! { #i })
+                    .unwrap_or_else(|| quote! { _ });
+
+                quote! {
+                    #struct_def
+                    impl #impl_gen #crate_::ModelMessage for #struct_name #ty_gen #where_clause {}
+                    impl #impl_gen #crate_::ModelHandler<#struct_name> for #model_ty #ty_gen #where_clause {
                         fn update(
                             &mut self,
-                            #name { #(#field_names),* }: #name #ty_generics,
-                            #ctx_name: &mut #crate_::UpdateContext<<#model_ty as #crate_::Model>::ForApp>,
+                            #struct_name { #(#field_names),* }: #struct_name #ty_gen,
+                            #ctx_pat: &mut #crate_::UpdateContext<<#model_ty as #crate_::Model>::ForApp>,
                         ) {
                             #block
                         }
                     }
-                })
-            }
-            DispatcherItemKind::Getter { data_ty } => Ok(quote! {
-                #struct_decl
-                impl #impl_generics #crate_::ModelGetterMessage for #name #ty_generics #where_clause {
-                    type Data = #data_ty;
                 }
-                impl #impl_generics #crate_::ModelGetterHandler<#name> for #model_ty #where_clause {
-                    fn getter(&self, #name { #(#field_names),* }: #name #ty_generics) -> #data_ty {
-                        #block
+            }
+            MethodKind::Getter { return_ty } => {
+                quote! {
+                    #struct_def
+                    impl #impl_gen #crate_::ModelGetterMessage for #struct_name #ty_gen #where_clause {
+                        type Data = #return_ty;
+                    }
+                    impl #impl_gen #crate_::ModelGetterHandler<#struct_name> for #model_ty #where_clause {
+                        fn getter(&self, #struct_name { #(#field_names),* }: #struct_name #ty_gen) -> #return_ty {
+                            #block
+                        }
                     }
                 }
-            }),
+            }
+            _ => TokenStream::new(), // Constructors/Splitters don't generate message structs
         }
     }
-}
 
-impl<'a> DispatcherItem<'a> {
-    fn generate_dispatcher_fns(&self) -> GeneratedDispatcherFns {
+    fn generate_args(&self) -> Vec<TokenStream> {
+        self.fields
+            .iter()
+            .map(|f| {
+                let name = f.name;
+                let ty = f.ty;
+                quote! { #name: #ty }
+            })
+            .collect()
+    }
+
+    /// Generates the `async fn name(...)` for the main Dispatcher struct
+    fn generate_dispatcher_method(&self) -> TokenStream {
         let vis = self
             .args
             .dispatcher
             .clone()
             .unwrap_or(Visibility::Inherited);
-        let fields = &self.fields;
+        let fn_name = &self.sig.ident;
+        let struct_name = self.struct_name();
+
+        let args = self.generate_args();
         let field_names = self.fields.iter().map(|f| f.name).collect::<Vec<_>>();
-        let fn_name = self.name;
-        let name = self.name();
-        // todo: add the ability to customize the closure body, maybe with a `with = "function`?
-        let closure_body = quote! {
-            #name { #(#field_names),* }
-        };
-        let (return_ty, method_call) = match &self.kind {
-            DispatcherItemKind::Updater { .. } => (TokenStream::new(), quote! { send }),
-            DispatcherItemKind::Getter { data_ty, .. } => (quote! { -> #data_ty }, quote! { get }),
-        };
-        let dispatcher_fn = quote! {
-            // todo: add the ability to add attributes to dispatcher functions
-            #vis async fn #fn_name(&mut self, #(#fields),*) #return_ty {
-                let f: fn(#(#fields),*) -> #name = |#(#field_names),*| #closure_body;
-                self.0.#method_call(f(#(#field_names),*)).await
+        let closure_construction = quote! { #struct_name { #(#field_names),* } };
+
+        match &self.kind {
+            MethodKind::Updater { .. } => {
+                quote! {
+                    #vis async fn #fn_name(&mut self, #(#args),*) {
+                        let f: fn(_) -> #struct_name = |#(#field_names),*| #closure_construction;
+                        self.0.send(f(#(#field_names),*)).await
+                    }
+                }
             }
+            MethodKind::Getter { return_ty } => {
+                quote! {
+                    #vis async fn #fn_name(&mut self, #(#args),*) -> #return_ty {
+                        let f: fn(_) -> #struct_name = |#(#field_names),*| #closure_construction;
+                        self.0.get(f(#(#field_names),*)).await
+                    }
+                }
+            }
+            _ => TokenStream::new(),
+        }
+    }
+
+    /// Generates the method for the Updater/Getter wrapper (delegates to inner dispatcher)
+    fn generate_wrapper_method(&self) -> TokenStream {
+        let vis = self
+            .args
+            .dispatcher
+            .clone()
+            .unwrap_or(Visibility::Inherited);
+        let fn_name = &self.sig.ident;
+
+        let args = self.generate_args();
+        let field_names = self.fields.iter().map(|f| f.name);
+
+        let return_type = match &self.kind {
+            MethodKind::Getter { return_ty } => quote! { -> #return_ty },
+            _ => TokenStream::new(),
         };
-        let wrapper_fn = quote! {
-            #vis async fn #fn_name(&mut self, #(#fields),*) #return_ty {
+
+        quote! {
+            #vis async fn #fn_name(&mut self, #(#args),*) #return_type {
                 self.0.#fn_name(#(#field_names),*).await
             }
-        };
-        let wrapper_fn = match &self.kind {
-            DispatcherItemKind::Updater { .. } => GeneratedDispatcherWrapperFn::Updater(wrapper_fn),
-            DispatcherItemKind::Getter { .. } => GeneratedDispatcherWrapperFn::Getter(wrapper_fn),
-        };
-        GeneratedDispatcherFns {
-            dispatcher_fn,
-            wrapper_fn,
         }
     }
 }
 
-struct GeneratedDispatcherFns {
-    dispatcher_fn: TokenStream,
-    wrapper_fn: GeneratedDispatcherWrapperFn,
+impl<'a> ToTokens for ParsedField<'a> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let attrs = &self.attrs;
+        let vis = self.args.vis.clone().unwrap_or(Visibility::Inherited);
+        let name = self.name;
+        let ty = self.ty;
+
+        tokens.extend(quote! {
+            #(#attrs)*
+            #vis #name: #ty
+        });
+    }
 }
 
-enum GeneratedDispatcherWrapperFn {
-    Updater(TokenStream),
-    Getter(TokenStream),
-}
-
-pub fn build(value: ItemImpl, args: DispatcherArgs) -> syn::Result<TokenStream> {
-    DispatcherContext::new(&value, args)?.generate()
+pub fn build(item_impl: ItemImpl, args: DispatcherArgs) -> syn::Result<TokenStream> {
+    DispatcherContext::new(&item_impl, args)?.generate()
 }
