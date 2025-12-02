@@ -5,8 +5,8 @@ use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Attribute, Block, FnArg, ImplItem, ItemImpl, MetaList, Pat, PatIdent, PatType, PathArguments,
-    ReturnType, Signature, Type, TypePath, Visibility,
+    Attribute, Block, FnArg, MetaList, Pat, PatIdent, PatType, PathArguments,
+    ReturnType, Signature, Token, Type, TypePath, Visibility,
 };
 // ==================================================================================
 // Utilities & Helpers
@@ -57,19 +57,37 @@ fn get_model_name(ty: &Type) -> syn::Result<Ident> {
 struct GenerateDispatcherArgs {
     #[darling(default)]
     dispatcher: Option<Ident>,
+
     #[darling(default)]
     vis: Option<Visibility>,
+
+    /// Automatically generates `#[derive(Clone)]` for the dispatcher, updater, and getter
+    #[darling(default)]
     clone: bool,
+
+    /// Shorthand for `pub fn new();`
+    #[darling(default)]
+    new: bool,
+
+    /// Shorthand for `pub fn split() -> (_, _);`
+    #[darling(default)]
+    split: bool,
+
     #[darling(multiple, rename = "attr")]
     attrs: Vec<syn::Meta>,
+
     #[darling(multiple, rename = "inner_attr")]
     inner_attrs: Vec<syn::Meta>,
+
     #[darling(multiple, rename = "updater_attr")]
     updater_attrs: Vec<syn::Meta>,
+
     #[darling(multiple, rename = "updater_inner_attr")]
     updater_inner_attrs: Vec<syn::Meta>,
+
     #[darling(multiple, rename = "getter_attr")]
     getter_attrs: Vec<syn::Meta>,
+
     #[darling(multiple, rename = "getter_inner_attr")]
     getter_inner_attrs: Vec<syn::Meta>,
 }
@@ -79,6 +97,14 @@ impl GenerateDispatcherArgs {
         self.dispatcher
             .clone()
             .unwrap_or_else(|| format_ident!("{model_name}Dispatcher"))
+    }
+
+    fn vis(&self) -> Option<Visibility> {
+        if self.new {
+            Some(Visibility::Public(Token![pub](Span::call_site())))
+        } else {
+            self.vis.clone()
+        }
     }
 
     fn derive_clone(&self) -> TokenStream {
@@ -253,9 +279,9 @@ struct DispatcherContext<'a> {
     // Parsed Items
     handlers: Vec<ParsedMethod<'a>>,
 
-    constructor: Option<(&'a Visibility, Vec<&'a Attribute>)>,
+    constructor: Option<(Visibility, Vec<&'a Attribute>)>,
     splitter: Option<(
-        &'a Visibility,
+        Visibility,
         Vec<&'a Attribute>,
         Option<Ident>,
         Option<Ident>,
@@ -273,15 +299,31 @@ impl<'a> DispatcherContext<'a> {
         let mut constructor = None;
         let mut splitter = None;
 
+        if args.generate.as_ref().map(|g| g.new).unwrap_or_default() {
+            constructor = Some((
+                Visibility::Public(Token![pub](Span::call_site())),
+                Vec::new(),
+            ));
+        }
+
+        if args.generate.as_ref().map(|g| g.split).unwrap_or_default() {
+            splitter = Some((
+                Visibility::Public(Token![pub](Span::call_site())),
+                Vec::new(),
+                None,
+                None,
+            ));
+        }
+
         for item in &interface_impl.items {
             let parsed = ParsedMethod::new(item)?;
 
             match parsed.kind {
                 MethodKind::Constructor => {
-                    constructor = Some((parsed.vis, parsed.attrs));
+                    constructor = Some((parsed.vis.clone(), parsed.attrs));
                 }
                 MethodKind::Splitter { updater, getter } => {
-                    splitter = Some((parsed.vis, parsed.attrs, updater, getter));
+                    splitter = Some((parsed.vis.clone(), parsed.attrs, updater, getter));
                 }
                 MethodKind::Updater { .. } | MethodKind::Getter { .. } => {
                     handlers.push(parsed);
@@ -511,7 +553,7 @@ impl<'a> DispatcherContext<'a> {
         let model_ty = self.model_ty;
 
         let dispatcher_name = args.dispatcher_ident(&self.model_name);
-        let vis = args.vis.as_ref().unwrap_or(&Visibility::Inherited);
+        let vis = args.vis().unwrap_or(Visibility::Inherited);
         let derive_clone = args.derive_clone();
         let (dispatcher_attrs, dispatcher_inner_attrs) = args.attrs()?;
 
@@ -519,7 +561,7 @@ impl<'a> DispatcherContext<'a> {
         let (new_vis, new_attrs) = self
             .constructor
             .clone()
-            .unwrap_or((&Visibility::Inherited, Vec::new()));
+            .unwrap_or((Visibility::Inherited, Vec::new()));
 
         // Generate methods for the main dispatcher
         let dispatcher_methods = self
@@ -553,15 +595,16 @@ impl<'a> DispatcherContext<'a> {
 
         // If 'split' is defined, generate Updater and Getter wrappers
         if let Some((split_vis, split_attrs, updater_name, getter_name)) = &self.splitter {
+            let model_name = &self.model_name;
             let split_impl = self.generate_split_impl(
                 args,
                 &dispatcher_name,
                 updater_name
                     .clone()
-                    .unwrap_or_else(|| format_ident!("{}Updater", self.model_name)),
+                    .unwrap_or_else(|| format_ident!("{model_name}Updater")),
                 getter_name
                     .clone()
-                    .unwrap_or_else(|| format_ident!("{}Getter", self.model_name)),
+                    .unwrap_or_else(|| format_ident!("{model_name}Getter")),
                 split_vis,
                 split_attrs,
             )?;
@@ -585,7 +628,7 @@ impl<'a> DispatcherContext<'a> {
         let (new_vis, _) = self
             .constructor
             .clone()
-            .unwrap_or((&Visibility::Inherited, Vec::new()));
+            .unwrap_or((Visibility::Inherited, Vec::new()));
 
         // Separate handler methods into updater methods and getter methods
         let mut updater_fns = Vec::new();
