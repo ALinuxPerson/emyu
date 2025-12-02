@@ -62,10 +62,16 @@ struct GenerateDispatcherArgs {
     clone: bool,
     #[darling(multiple, rename = "attr")]
     attrs: Vec<syn::Meta>,
+    #[darling(multiple, rename = "inner_attr")]
+    inner_attrs: Vec<syn::Meta>,
     #[darling(multiple, rename = "updater_attr")]
     updater_attrs: Vec<syn::Meta>,
+    #[darling(multiple, rename = "updater_inner_attr")]
+    updater_inner_attrs: Vec<syn::Meta>,
     #[darling(multiple, rename = "getter_attr")]
     getter_attrs: Vec<syn::Meta>,
+    #[darling(multiple, rename = "getter_inner_attr")]
+    getter_inner_attrs: Vec<syn::Meta>,
 }
 
 impl GenerateDispatcherArgs {
@@ -82,20 +88,49 @@ impl GenerateDispatcherArgs {
             TokenStream::new()
         }
     }
+}
 
-    fn attrs(&self) -> syn::Result<Vec<TokenStream>> {
-        self.attrs.iter().map(meta_to_token_stream).collect()
-    }
-
-    fn updater_attrs(&self) -> syn::Result<Vec<TokenStream>> {
-        self.updater_attrs
+impl GenerateDispatcherArgs {
+    fn attrs(&self) -> syn::Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+        let outer = self
+            .attrs
             .iter()
             .map(meta_to_token_stream)
-            .collect()
+            .collect::<syn::Result<_>>()?;
+        let inner = self
+            .inner_attrs
+            .iter()
+            .map(meta_to_token_stream)
+            .collect::<syn::Result<_>>()?;
+        Ok((outer, inner))
     }
 
-    fn getter_attrs(&self) -> syn::Result<Vec<TokenStream>> {
-        self.getter_attrs.iter().map(meta_to_token_stream).collect()
+    fn updater_attrs(&self) -> syn::Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+        let outer = self
+            .updater_attrs
+            .iter()
+            .map(meta_to_token_stream)
+            .collect::<syn::Result<_>>()?;
+        let inner = self
+            .updater_inner_attrs
+            .iter()
+            .map(meta_to_token_stream)
+            .collect::<syn::Result<_>>()?;
+        Ok((outer, inner))
+    }
+
+    fn getter_attrs(&self) -> syn::Result<(Vec<TokenStream>, Vec<TokenStream>)> {
+        let outer = self
+            .getter_attrs
+            .iter()
+            .map(meta_to_token_stream)
+            .collect::<syn::Result<_>>()?;
+        let inner = self
+            .getter_inner_attrs
+            .iter()
+            .map(meta_to_token_stream)
+            .collect::<syn::Result<_>>()?;
+        Ok((outer, inner))
     }
 }
 
@@ -436,7 +471,7 @@ impl<'a> DispatcherContext<'a> {
         let dispatcher_name = args.dispatcher_ident(&self.model_name);
         let vis = args.vis.as_ref().unwrap_or(&Visibility::Inherited);
         let derive_clone = args.derive_clone();
-        let dispatcher_attrs = args.attrs()?;
+        let (dispatcher_attrs, dispatcher_inner_attrs) = args.attrs()?;
 
         // Constructor info
         let (new_vis, new_attrs) = self
@@ -455,7 +490,7 @@ impl<'a> DispatcherContext<'a> {
         let mut tokens = quote! {
             #(#dispatcher_attrs)*
             #derive_clone
-            #vis struct #dispatcher_name(#crate_::Dispatcher<#model_ty>);
+            #vis struct #dispatcher_name(#(#dispatcher_inner_attrs)* #crate_::Dispatcher<#model_ty>);
 
             impl #dispatcher_name {
                 #(#new_attrs)*
@@ -524,8 +559,8 @@ impl<'a> DispatcherContext<'a> {
         }
 
         let derive_clone = args.derive_clone();
-        let updater_attrs = args.updater_attrs()?;
-        let getter_attrs = args.getter_attrs()?;
+        let (updater_attrs, updater_inner_attrs) = args.updater_attrs()?;
+        let (getter_attrs, getter_inner_attrs) = args.getter_attrs()?;
 
         Ok(quote! {
             // Split implementation on Dispatcher
@@ -543,7 +578,7 @@ impl<'a> DispatcherContext<'a> {
             // Updater Struct
             #(#updater_attrs)*
             #derive_clone
-            #split_vis struct #updater_name(#dispatcher_name);
+            #split_vis struct #updater_name(#(#updater_inner_attrs)* #dispatcher_name);
 
             impl #crate_::WrappedUpdater for #updater_name {
                 type WrappedDispatcher = #dispatcher_name;
@@ -561,7 +596,7 @@ impl<'a> DispatcherContext<'a> {
             // Getter Struct
             #(#getter_attrs)*
             #derive_clone
-            #split_vis struct #getter_name(#dispatcher_name);
+            #split_vis struct #getter_name(#(#getter_inner_attrs)* #dispatcher_name);
 
             impl #crate_::WrappedGetter for #getter_name {
                 type WrappedDispatcher = #dispatcher_name;
