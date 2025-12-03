@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["std"]
 frb-compat = ["vye-base/frb-compat"]
 tokio = ["vye-base/tokio"]
 macros = ["dep:vye-macros"]
+std = ["vye-base/std"]
 
 [dependencies]
 vye-base = { version = "0.1.0", path = "../base" }
