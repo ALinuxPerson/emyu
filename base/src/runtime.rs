@@ -1,16 +1,20 @@
 use crate::base::{Application, Command, Model};
-use crate::{Dispatcher, ModelBase, ModelHandler, ModelMessage, ModelWithRegion, Updater};
-use futures::channel::mpsc;
-use futures::{SinkExt, Stream, StreamExt};
-use core::any::type_name;
+use crate::{
+    Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelHandler,
+    ModelMessage, ModelWithRegion, Updater,
+};
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use core::any::type_name;
 use core::mem;
 use core::ops::ControlFlow;
-use core::pin::{pin, Pin};
+use core::pin::{Pin, pin};
 use core::task::{Context, Poll};
-use type_map::concurrent::TypeMap;
-use alloc::boxed::Box;
+use futures::channel::mpsc;
+use futures::{SinkExt, Stream, StreamExt};
 use hashbrown::HashSet;
+use std::sync::Arc;
+use type_map::concurrent::TypeMap;
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -236,6 +240,7 @@ impl World {
 pub struct MvuRuntimeBuilder<A: Application> {
     model: Option<A::RootModel>,
     world: World,
+    interceptors: Vec<Box<dyn DynInterceptor>>,
     buffer_size: usize,
 }
 
@@ -272,6 +277,19 @@ impl<A: Application> MvuRuntimeBuilder<A> {
         }
     }
 
+    pub fn dyn_interceptor(mut self, value: impl DynInterceptor) -> Self {
+        self.interceptors.push(Box::new(value));
+        self
+    }
+
+    pub fn interceptor<M, Msg>(self, value: impl Interceptor<M, Msg>) -> Self
+    where
+        M: Model<ForApp = A>,
+        Msg: ModelMessage + Sync,
+    {
+        self.dyn_interceptor(InterceptorWrapper::new(value))
+    }
+
     pub fn buffer_size(self, value: usize) -> Self {
         Self {
             buffer_size: value,
@@ -299,7 +317,7 @@ impl<A: Application> MvuRuntimeBuilder<A> {
                 world: self.world,
                 queue: CommandQueue::default(),
                 dirty_regions: DirtyRegions::default(),
-                dispatcher: Dispatcher::new_root(action_tx, model),
+                dispatcher: Dispatcher::new_root(action_tx, model, Arc::new(self.interceptors)),
                 update_actions_rx: action_rx,
                 should_refresh_tx,
             },
@@ -313,6 +331,7 @@ impl<A: Application> Default for MvuRuntimeBuilder<A> {
         Self {
             model: None,
             world: World::default(),
+            interceptors: Vec::new(),
             buffer_size: DEFAULT_CHANNEL_BUFFER_SIZE,
         }
     }

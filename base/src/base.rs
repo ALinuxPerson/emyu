@@ -1,13 +1,13 @@
 use crate::dispatcher::MvuRuntimeChannelClosedError;
 use crate::runtime::{ApplyContext, UpdateContext};
+use crate::{VRWLockReadGuard, VRWLockWriteGuard, VRwLock};
+use alloc::sync::Arc;
 use async_trait::async_trait;
+use core::any::Any;
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::marker::PhantomData;
-use alloc::sync::Arc;
-use alloc::boxed::Box;
 use thiserror::Error;
-use crate::{VRWLockReadGuard, VRWLockWriteGuard, VRwLock};
 
 pub trait Application: 'static {
     type RootModel: Model<ForApp = Self>;
@@ -90,20 +90,24 @@ impl<M> ModelBase<M> {
     pub fn read(&self) -> VRWLockReadGuard<'_, M> {
         #[cfg(feature = "std")]
         let ret = self.0.read().unwrap();
-        
+
         #[cfg(not(feature = "std"))]
         let ret = self.0.read();
-        
+
         ret
+    }
+
+    pub fn reader(&self) -> ModelBaseReader<M> {
+        ModelBaseReader(self.clone())
     }
 
     pub fn write(&self) -> VRWLockWriteGuard<'_, M> {
         #[cfg(feature = "std")]
         let ret = self.0.write().unwrap();
-        
+
         #[cfg(not(feature = "std"))]
         let ret = self.0.write();
-        
+
         ret
     }
 }
@@ -145,5 +149,99 @@ impl<M: Model> ModelBase<M> {
 impl<M> Clone for ModelBase<M> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
+    }
+}
+
+pub struct ModelBaseReader<M>(ModelBase<M>);
+
+impl<M> ModelBaseReader<M> {
+    pub fn read(&self) -> VRWLockReadGuard<'_, M> {
+        self.0.read()
+    }
+}
+
+impl<M: Model> ModelBaseReader<M> {
+    pub fn getter<Msg>(&self, message: Msg) -> Msg::Data
+    where
+        Msg: ModelGetterMessage,
+        M: ModelGetterHandler<Msg>,
+    {
+        self.0.getter(message)
+    }
+
+    pub fn zoom<Child>(&self, lens: Lens<M, Child>) -> ModelBaseReader<Child>
+    where
+        Child: Model<ForApp = M::ForApp>,
+    {
+        ModelBaseReader(self.0.zoom(lens))
+    }
+}
+
+impl<M> Clone for ModelBaseReader<M> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+pub trait DynInterceptor: Send + Sync + 'static {
+    fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any);
+}
+
+impl<F> DynInterceptor for F
+where
+    F: Fn(&dyn Any, &dyn Any) + Send + Sync + 'static,
+{
+    fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
+        self(model, message)
+    }
+}
+
+pub trait Interceptor<M, Msg>: Send + Sync + 'static
+where
+    M: Model,
+    Msg: ModelMessage,
+{
+    fn intercept(&self, model: ModelBaseReader<M>, message: &Msg);
+}
+
+impl<M, Msg, F> Interceptor<M, Msg> for F
+where
+    M: Model,
+    Msg: ModelMessage,
+    F: Fn(ModelBaseReader<M>, &Msg) + Send + Sync + 'static,
+{
+    fn intercept(&self, model: ModelBaseReader<M>, message: &Msg) {
+        self(model, message)
+    }
+}
+
+pub struct InterceptorWrapper<M, Msg, I> {
+    interceptor: I,
+    _marker: PhantomData<(M, Msg)>,
+}
+
+impl<M, Msg, I> InterceptorWrapper<M, Msg, I> {
+    pub fn new(interceptor: I) -> Self {
+        Self {
+            interceptor,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<M, Msg, I> DynInterceptor for InterceptorWrapper<M, Msg, I>
+where
+    M: Model,
+    Msg: ModelMessage + Sync,
+    I: Interceptor<M, Msg>,
+{
+    fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
+        if let (Some(model), Some(message)) = (
+            model.downcast_ref::<ModelBase<M>>(),
+            message.downcast_ref::<Msg>(),
+        ) {
+            let model_reader = ModelBaseReader(model.clone());
+            self.interceptor.intercept(model_reader, message);
+        }
     }
 }

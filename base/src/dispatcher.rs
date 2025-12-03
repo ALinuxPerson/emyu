@@ -1,12 +1,12 @@
-use alloc::boxed::Box;
 use crate::runtime::UpdateAction;
 use crate::{
-    Application, Lens, Model, ModelBase, ModelGetterHandler, ModelGetterMessage, ModelHandler,
-    ModelMessage, UpdateContext,
+    Application, DynInterceptor, Lens, Model, ModelBase, ModelGetterHandler, ModelGetterMessage,
+    ModelHandler, ModelMessage, UpdateContext,
 };
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use futures::SinkExt;
 use futures::channel::mpsc;
-use alloc::sync::Arc;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -20,6 +20,7 @@ type UpdateMapper<M> = dyn Fn(UpdateAction<M>) -> UpdateAction<RootModelOf<M>> +
 pub struct Dispatcher<M: Model> {
     tx: mpsc::Sender<UpdateAction<RootModelOf<M>>>,
     model: ModelBase<M>,
+    interceptors: Arc<Vec<Box<dyn DynInterceptor>>>,
     mapper: Arc<UpdateMapper<M>>,
 }
 
@@ -29,6 +30,10 @@ impl<M: Model> Dispatcher<M> {
         Msg: ModelMessage,
         M: ModelHandler<Msg>,
     {
+        for interceptor in self.interceptors.iter() {
+            interceptor.intercept_dyn(&self.model.reader(), &message);
+        }
+
         let action = Box::new(
             move |model: ModelBase<M>, ctx: &mut UpdateContext<M::ForApp>| {
                 model.update(message, ctx)
@@ -78,6 +83,7 @@ impl<M: Model> Dispatcher<M> {
         Dispatcher {
             tx: self.tx,
             model: self.model.zoom(lens),
+            interceptors: Arc::clone(&self.interceptors),
             mapper: update_mapper,
         }
     }
@@ -88,6 +94,7 @@ impl<M: Model> Clone for Dispatcher<M> {
         Self {
             tx: self.tx.clone(),
             model: self.model.clone(),
+            interceptors: Arc::clone(&self.interceptors),
             mapper: Arc::clone(&self.mapper),
         }
     }
@@ -98,10 +105,15 @@ where
     R: Model,
     <R as Model>::ForApp: Application<RootModel = R>,
 {
-    pub(crate) fn new_root(tx: mpsc::Sender<UpdateAction<R>>, model: ModelBase<R>) -> Self {
+    pub(crate) fn new_root(
+        tx: mpsc::Sender<UpdateAction<R>>,
+        model: ModelBase<R>,
+        interceptors: Arc<Vec<Box<dyn DynInterceptor>>>,
+    ) -> Self {
         Self {
             tx,
             model,
+            interceptors,
             mapper: Arc::new(|action| action),
         }
     }
