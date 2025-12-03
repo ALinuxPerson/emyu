@@ -1,8 +1,5 @@
-use crate::base::{Application, Command, Model};
-use crate::{
-    Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelHandler,
-    ModelMessage, ModelWithRegion, Updater,
-};
+use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
+use crate::{Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelBaseReader, ModelHandler, ModelMessage, ModelWithRegion, Updater, VRWLockReadGuard};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use core::any::type_name;
@@ -76,18 +73,22 @@ impl<'rt, A: Application> UpdateContext<'rt, A> {
 }
 
 pub struct CommandContext<'rt, A: Application> {
-    pub model: &'rt ModelBase<A::RootModel>,
+    pub model: ModelBaseReader<A::RootModel>,
     pub world: &'rt mut World,
     pub updater: Updater<A::RootModel>,
 }
 
 impl<'rt, A: Application> CommandContext<'rt, A> {
-    pub async fn send_message<Msg>(&mut self, message: Msg)
+    pub fn read(&self) -> VRWLockReadGuard<'_, A::RootModel> {
+        self.model.read()
+    }
+
+    pub fn getter<Msg>(&self, message: Msg) -> Msg::Data
     where
-        Msg: ModelMessage,
-        A::RootModel: ModelHandler<Msg>,
+        Msg: ModelGetterMessage,
+        A::RootModel: ModelGetterHandler<Msg>,
     {
-        self.updater.send(message).await
+        self.model.getter(message)
     }
 
     pub fn state<S: Send + Sync + 'static>(&self) -> &S {
@@ -96,6 +97,14 @@ impl<'rt, A: Application> CommandContext<'rt, A> {
 
     pub fn state_mut<S: Send + Sync + 'static>(&mut self) -> &mut S {
         self.world.get_mut()
+    }
+
+    pub async fn send_message<Msg>(&mut self, message: Msg)
+    where
+        Msg: ModelMessage,
+        A::RootModel: ModelHandler<Msg>,
+    {
+        self.updater.send(message).await
     }
 }
 
@@ -177,7 +186,7 @@ impl<A: Application> MvuRuntime<A> {
 
         let (updater, _) = self.dispatcher.clone().split();
         let mut command_ctx = CommandContext {
-            model: &self.model,
+            model: self.model.reader(),
             world: &mut self.world,
             updater,
         };
