@@ -44,6 +44,7 @@ impl Parse for MaybeStubFn {
 }
 
 pub struct InterfaceImpl {
+    pub vis: Visibility,
     pub self_ty: Type,
     pub items: Vec<MaybeStubFn>,
 }
@@ -51,6 +52,7 @@ pub struct InterfaceImpl {
 impl Parse for InterfaceImpl {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.call(Attribute::parse_outer)?;
+        let vis = input.parse::<Visibility>()?;
         input.parse::<Token![impl]>()?;
         let self_ty: Type = input.parse()?;
         let content;
@@ -61,7 +63,7 @@ impl Parse for InterfaceImpl {
             items.push(content.parse()?);
         }
 
-        Ok(InterfaceImpl { self_ty, items })
+        Ok(InterfaceImpl { vis, self_ty, items })
     }
 }
 

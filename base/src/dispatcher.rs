@@ -196,16 +196,13 @@ pub mod __private {
     }
 }
 
-pub trait WrappedDispatcher: __private::Sealed {
+pub trait WrappedDispatcher: Clone + __private::Sealed {
     type Model: Model;
+    type Updater: WrappedUpdater<WrappedDispatcher = Self>;
+    type Getter: WrappedGetter<WrappedDispatcher = Self>;
 
     #[doc(hidden)]
     fn __new(dispatcher: Dispatcher<Self::Model>, _token: __private::Token) -> Self;
-}
-
-pub trait SplittableWrappedDispatcher: WrappedDispatcher + Clone {
-    type Updater: WrappedUpdater<WrappedDispatcher = Self>;
-    type Getter: WrappedGetter<WrappedDispatcher = Self>;
 
     #[doc(hidden)]
     fn __split(self, _token: __private::Token) -> (Self::Updater, Self::Getter) {
@@ -217,14 +214,14 @@ pub trait SplittableWrappedDispatcher: WrappedDispatcher + Clone {
 }
 
 pub trait WrappedUpdater: __private::Sealed {
-    type WrappedDispatcher: SplittableWrappedDispatcher<Updater = Self>;
+    type WrappedDispatcher: WrappedDispatcher<Updater = Self>;
 
     #[doc(hidden)]
     fn __new(dispatcher: Self::WrappedDispatcher, _token: __private::Token) -> Self;
 }
 
 pub trait WrappedGetter: __private::Sealed {
-    type WrappedDispatcher: SplittableWrappedDispatcher<Getter = Self>;
+    type WrappedDispatcher: WrappedDispatcher<Getter = Self>;
 
     #[doc(hidden)]
     fn __new(dispatcher: Self::WrappedDispatcher, _token: __private::Token) -> Self;

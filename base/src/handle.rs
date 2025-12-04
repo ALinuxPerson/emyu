@@ -33,8 +33,7 @@ pub use spawner::FrbSpawner;
 pub use spawner::TokioSpawner;
 
 use crate::{
-    Application, MvuRuntime, MvuRuntimeBuilder, ShouldRefreshSubscriber,
-    SplittableWrappedDispatcher, WrappedDispatcher,
+    Application, MvuRuntime, MvuRuntimeBuilder, ShouldRefreshSubscriber, WrappedDispatcher,
 };
 use crossbeam::atomic::AtomicCell;
 use futures::Stream;
@@ -105,7 +104,7 @@ where
 impl<A, WD> AppHandle<A, WD>
 where
     A: Application,
-    WD: SplittableWrappedDispatcher<Model = A::RootModel>,
+    WD: WrappedDispatcher<Model = A::RootModel>,
 {
     pub fn updater(&self) -> WD::Updater {
         let (updater, _) = self
