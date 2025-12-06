@@ -14,5 +14,3 @@ pub struct MethodArgs {
     #[darling(default)]
     pub meta: Option<MetaConfig>,
 }
-
-

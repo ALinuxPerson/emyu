@@ -45,7 +45,8 @@ impl<'a> ToTokens for ProcessedMetaRef<'a> {
     }
 }
 
-pub struct ProcessedMeta(TokenStream);
+#[derive(Debug)]
+pub struct ProcessedMeta(pub(crate) TokenStream);
 
 impl ToTokens for ProcessedMeta {
     fn to_tokens(&self, tokens: &mut TokenStream) {

@@ -1,18 +1,19 @@
-use crate::crate_;
+use crate::model::attr::raw::ProcessedMeta;
 use crate::model::attr::{ModelArgs, NewMethodArgs, UpdaterGetterMethodArgs, raw};
 use crate::model::{
     FnKind, ModelContext, ParsedFnArg, ParsedGetterFn, ParsedNewFn, ParsedNewSplitFn,
     ParsedSplitFn, ParsedUpdaterFn, ParsedUpdaterGetterFn, RawModelArgs,
 };
-use crate::utils::{InterfaceImpl, MaybeStubFn};
+use crate::utils::{InterfaceImpl, MaybeStubFn, ThisCrate};
 use darling::FromAttributes;
-use proc_macro2::Ident;
+use proc_macro2::{Ident, TokenStream};
 use syn::spanned::Spanned;
 use syn::{
     AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Pat, PatIdent, PatType,
     Path, PathArguments, PathSegment, ReturnType, Signature, Type, TypePath, TypeReference,
     Visibility,
 };
+use crate::utils;
 
 fn is_ty_update_context(ty: &Type) -> bool {
     // &...
@@ -83,20 +84,21 @@ impl<'a> ModelContext<'a> {
                 )
             })?
             .ident;
+        let crate_ = ThisCrate::default();
         let items = item
             .items
             .iter()
-            .map(ParsedFnFirstPass::parse)
+            .map(|item| ParsedFnFirstPass::parse(item, &crate_, attrs.flutter_rust_bridge()))
             .collect::<syn::Result<Vec<_>>>()?;
         let ParsedFnsSecondPass {
             new_fn,
             split_fn,
             updaters,
             getters,
-        } = ParsedFnsSecondPass::parse(items);
+        } = ParsedFnsSecondPass::parse(items, &crate_, attrs.flutter_rust_bridge());
         Ok(Self {
-            crate_: crate_(),
-            args: ModelArgs::parse(attrs, model_name, ty_path.span())?,
+            args: ModelArgs::parse(attrs, model_name, &crate_, ty_path.span())?,
+            crate_,
             struct_vis: &item.vis,
             model_ty: ty_path,
             new_fn,
@@ -114,9 +116,9 @@ struct ParsedFnFirstPass<'a> {
 }
 
 impl<'a> ParsedFnFirstPass<'a> {
-    fn parse(item: &'a MaybeStubFn) -> syn::Result<Self> {
+    fn parse(item: &'a MaybeStubFn, crate_: &ThisCrate, flutter_rust_bridge: bool) -> syn::Result<Self> {
         let args = raw::MethodArgs::from_attributes(&item.attrs)?;
-        let mut kind = FnKind::analyze(item, args)?;
+        let mut kind = FnKind::analyze(item, args, crate_, flutter_rust_bridge)?;
         Ok(Self {
             vis: &item.vis,
             fn_args: item
@@ -183,7 +185,12 @@ impl<'a> FnKind<'a> {
         Ok(())
     }
 
-    fn analyze(item: &'a MaybeStubFn, args: raw::MethodArgs) -> syn::Result<Self> {
+    fn analyze(
+        item: &'a MaybeStubFn,
+        args: raw::MethodArgs,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> syn::Result<Self> {
         enum SelfTy {
             Shared,
             Mutable,
@@ -216,24 +223,33 @@ impl<'a> FnKind<'a> {
         );
 
         match (fn_name.as_str(), self_ty, ret_ty, block) {
-            ("new", None, ReturnType::Default, None) => {
-                Ok(Self::New(NewMethodArgs::parse(args, item.sig.span())?))
-            }
+            ("new", None, ReturnType::Default, None) => Ok(Self::New(NewMethodArgs::parse(
+                args,
+                item.sig.span(),
+                crate_,
+                flutter_rust_bridge,
+            )?)),
             ("split", None, ReturnType::Default, None) => Ok(Self::Split(&item.attrs)),
-            (_, Some(SelfTy::Mutable), ReturnType::Default, Some(block)) => Ok(Self::Updater {
-                args: UpdaterGetterMethodArgs::parse_updater(
-                    args,
-                    &item.sig.ident,
-                    item.sig.span(),
-                )?,
-                ctx: None, // ctx ident will be found in FnArgs parsing
-                block,
-            }),
+            (_, Some(SelfTy::Mutable), ReturnType::Default, Some(block)) => {
+                Ok(Self::Updater {
+                    args: UpdaterGetterMethodArgs::parse_updater(
+                        args,
+                        &item.sig.ident,
+                        item.sig.span(),
+                        crate_,
+                        flutter_rust_bridge,
+                    )?,
+                    ctx: None, // ctx ident will be found in FnArgs parsing
+                    block,
+                })
+            }
             (_, Some(SelfTy::Shared), ReturnType::Type(_, ty), block) => Ok(Self::Getter {
                 args: UpdaterGetterMethodArgs::parse_getter(
                     args,
                     &item.sig.ident,
                     item.sig.span(),
+                    crate_,
+                    flutter_rust_bridge,
                 )?,
                 ty,
                 block,
@@ -293,6 +309,30 @@ impl<'a> ParsedFnArg<'a> {
     }
 }
 
+impl ParsedNewSplitFn {
+    fn inject_base_meta(&mut self, tokens: TokenStream) {
+        self.method_args
+            .dispatcher_meta
+            .push(ProcessedMeta(tokens.clone()));
+        self.method_args
+            .updater_meta
+            .push(ProcessedMeta(tokens.clone()));
+        self.method_args.getter_meta.push(ProcessedMeta(tokens));
+    }
+}
+
+impl ParsedNewFn {
+    fn inject_base_meta(&mut self, tokens: TokenStream) {
+        self.0.inject_base_meta(tokens);
+    }
+}
+
+impl<'a> ParsedSplitFn<'a> {
+    fn inject_meta(&mut self, tokens: TokenStream) {
+        self.injected_meta.push(ProcessedMeta(tokens));
+    }
+}
+
 struct ParsedFnsSecondPass<'a> {
     new_fn: ParsedNewFn,
     split_fn: ParsedSplitFn<'a>,
@@ -301,7 +341,7 @@ struct ParsedFnsSecondPass<'a> {
 }
 
 impl<'a> ParsedFnsSecondPass<'a> {
-    fn parse(items: Vec<ParsedFnFirstPass<'a>>) -> Self {
+    fn parse(items: Vec<ParsedFnFirstPass<'a>>, crate_: &ThisCrate, flutter_rust_bridge: bool) -> Self {
         let mut new_fn = ParsedNewFn::default();
         let mut split_fn = ParsedSplitFn::default();
         let mut updaters = Vec::with_capacity(items.len());
@@ -319,6 +359,7 @@ impl<'a> ParsedFnsSecondPass<'a> {
                     split_fn = ParsedSplitFn {
                         vis: item.vis.clone(),
                         attrs,
+                        ..Default::default()
                     }
                 }
                 FnKind::Updater {
@@ -348,6 +389,11 @@ impl<'a> ParsedFnsSecondPass<'a> {
                     ret_ty: ty,
                 }),
             }
+        }
+
+        if flutter_rust_bridge {
+            new_fn.inject_base_meta(utils::frb_sync(crate_));
+            split_fn.inject_meta(utils::frb_sync(crate_));
         }
 
         updaters.shrink_to_fit();

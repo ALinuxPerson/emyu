@@ -1,4 +1,4 @@
-use crate::{crate_, utils};
+use crate::utils;
 use convert_case::ccase;
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, TokenStream};
@@ -7,6 +7,7 @@ use syn::{
     AngleBracketedGenericArguments, Attribute, Block, FnArg, GenericArgument, Generics, ItemFn,
     Pat, PatIdent, PatType, PathArguments, Signature, Type, TypeReference, Visibility,
 };
+use crate::utils::ThisCrate;
 
 /// All attrs shall be interpreted as the attrs for the generated Command struct. The visibility
 /// of the function shall determine the visibility of the generated Command struct. Must not
@@ -88,7 +89,7 @@ fn validate_signature(sig: &Signature) -> syn::Result<()> {
 }
 
 pub struct CommandContext<'a> {
-    crate_: TokenStream,
+    crate_: ThisCrate,
     args: CommandArgs,
     ctx_name: Ident,
     for_app_ty: Type,
@@ -126,7 +127,7 @@ impl<'a> CommandContext<'a> {
         };
 
         Ok(Self {
-            crate_: crate_(),
+            crate_: ThisCrate::default(),
             args,
             ctx_name,
             for_app_ty,

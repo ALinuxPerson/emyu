@@ -3,19 +3,6 @@ mod model;
 mod utils;
 
 use proc_macro::TokenStream;
-use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Ident, Span};
-use quote::quote;
-
-fn crate_() -> proc_macro2::TokenStream {
-    match crate_name("vye").expect("`vye` crate should be present in `Cargo.toml`") {
-        FoundCrate::Itself => quote! { crate },
-        FoundCrate::Name(name) => {
-            let ident = Ident::new(&name, Span::call_site());
-            quote! { #ident }
-        }
-    }
-}
 
 #[proc_macro_attribute]
 pub fn command(args: TokenStream, input: TokenStream) -> TokenStream {

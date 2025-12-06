@@ -4,14 +4,15 @@ mod parser;
 mod generator;
 
 use crate::model::attr::{NewMethodArgs, UpdaterGetterMethodArgs};
-use crate::utils::InterfaceImpl;
+use crate::utils::{InterfaceImpl, ThisCrate};
 use attr::ModelArgs;
 pub use attr::raw::ModelArgs as RawModelArgs;
 use proc_macro2::{Ident, TokenStream};
 use syn::{Attribute, Block, Type, TypePath, Visibility};
+use crate::model::attr::raw::ProcessedMeta;
 
 struct ModelContext<'a> {
-    crate_: TokenStream,
+    crate_: ThisCrate,
     args: ModelArgs,
     struct_vis: &'a Visibility,
     model_ty: &'a TypePath,
@@ -69,6 +70,7 @@ struct ParsedNewFn(ParsedNewSplitFn);
 struct ParsedSplitFn<'a> {
     vis: Visibility,
     attrs: &'a [Attribute],
+    injected_meta: Vec<ProcessedMeta>,
 }
 
 impl Default for ParsedSplitFn<'static> {
@@ -76,6 +78,7 @@ impl Default for ParsedSplitFn<'static> {
         Self {
             vis: Visibility::Inherited,
             attrs: &[],
+            injected_meta: Vec::new(),
         }
     }
 }

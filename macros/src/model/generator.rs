@@ -1,9 +1,10 @@
-use crate::model::attr::{ModelArgs, NewMethodArgs, Properties};
+use crate::model::attr::{ModelArgs, NewMethodArgs, ModelProperties};
 use crate::model::{ModelContext, ParsedFnArg, ParsedGetterFn, ParsedNewFn, ParsedSplitFn, ParsedUpdaterFn, ParsedUpdaterGetterFn};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{ToTokens, quote};
 use syn::{TypePath, Visibility};
 use crate::model::attr::raw::ProcessedMeta;
+use crate::utils::ThisCrate;
 
 impl<'a> ModelContext<'a> {
     pub(super) fn generate(&self) -> TokenStream {
@@ -28,8 +29,8 @@ impl<'a> ModelContext<'a> {
 
     fn generate_any_struct(
         &self,
-        props_accessor: impl FnOnce(&ModelArgs) -> &Properties,
-        f: impl FnOnce(&TokenStream, &Visibility, &TypePath, &Ident, &[ProcessedMeta], &[ProcessedMeta]) -> TokenStream,
+        props_accessor: impl FnOnce(&ModelArgs) -> &ModelProperties,
+        f: impl FnOnce(&ThisCrate, &Visibility, &TypePath, &Ident, &[ProcessedMeta], &[ProcessedMeta]) -> TokenStream,
     ) -> TokenStream {
         let props = props_accessor(&self.args);
         let crate_ = &self.crate_;
@@ -103,14 +104,14 @@ impl<'a> ModelContext<'a> {
     fn generate_updater_getter_impls<AnyFn>(
         &self,
         trait_name: &'static str,
-        props_accessor: impl FnOnce(&ModelArgs) -> &Properties,
-        new_fn: impl FnOnce(&ParsedNewFn, &TokenStream, &Ident) -> TokenStream,
+        props_accessor: impl FnOnce(&ModelArgs) -> &ModelProperties,
+        new_fn: impl FnOnce(&ParsedNewFn, &ThisCrate, &Ident) -> TokenStream,
         updater_getter_accessor: impl FnOnce(&Self) -> &Vec<AnyFn>,
         generate_fn: impl Fn(&AnyFn) -> TokenStream,
         generate_message_struct_and_trait_impls_fn: impl Fn(
             &AnyFn,
             &TypePath,
-            &TokenStream,
+            &ThisCrate,
         ) -> TokenStream,
     ) -> TokenStream {
         let trait_name = Ident::new(trait_name, Span::call_site());
@@ -233,7 +234,7 @@ impl<'a> ParsedFnArg<'a> {
 impl ParsedNewFn {
     fn generate(
         &self,
-        crate_: &TokenStream,
+        crate_: &ThisCrate,
         wrapped_ty: &'static str,
         dispatcher_ty: TokenStream,
         meta_fn: impl FnOnce(&NewMethodArgs) -> &Vec<ProcessedMeta>,
@@ -250,7 +251,7 @@ impl ParsedNewFn {
         }
     }
 
-    fn generate_for_dispatcher(&self, crate_: &TokenStream, model_ty: &TypePath) -> TokenStream {
+    fn generate_for_dispatcher(&self, crate_: &ThisCrate, model_ty: &TypePath) -> TokenStream {
         self.generate(
             crate_,
             "WrappedDispatcher",
@@ -259,7 +260,7 @@ impl ParsedNewFn {
         )
     }
 
-    fn generate_for_updater(&self, crate_: &TokenStream, dispatcher_name: &Ident) -> TokenStream {
+    fn generate_for_updater(&self, crate_: &ThisCrate, dispatcher_name: &Ident) -> TokenStream {
         self.generate(
             crate_,
             "WrappedUpdater",
@@ -268,7 +269,7 @@ impl ParsedNewFn {
         )
     }
 
-    fn generate_for_getter(&self, crate_: &TokenStream, dispatcher_name: &Ident) -> TokenStream {
+    fn generate_for_getter(&self, crate_: &ThisCrate, dispatcher_name: &Ident) -> TokenStream {
         self.generate(
             crate_,
             "WrappedGetter",
@@ -279,12 +280,19 @@ impl ParsedNewFn {
 }
 
 impl<'a> ParsedSplitFn<'a> {
-    fn generate(&self, crate_: &TokenStream, updater_name: &Ident, getter_name: &Ident) -> TokenStream {
+    fn rendered_meta(&self) -> impl Iterator<Item = TokenStream> {
+        self.attrs
+            .iter()
+            .map(ToTokens::to_token_stream)
+            .chain(self.injected_meta.iter().map(|meta| quote! { #[#meta] }))
+    }
+
+    fn generate(&self, crate_: &ThisCrate, updater_name: &Ident, getter_name: &Ident) -> TokenStream {
         let vis = &self.vis;
-        let attrs = &self.attrs;
+        let rendered_meta = self.rendered_meta();
 
         quote! {
-            #(#[#attrs])*
+            #(#rendered_meta)*
             #vis fn split(self) -> (#updater_name, #getter_name) {
                 #crate_::WrappedDispatcher::__split(self, #crate_::__private::Token::new())
             }
@@ -369,7 +377,7 @@ impl<'a> ParsedUpdaterFn<'a> {
     fn generate_message_struct_and_trait_impls(
         &self,
         model_ty: &TypePath,
-        crate_: &TokenStream,
+        crate_: &ThisCrate,
     ) -> TokenStream {
         self.common
             .generate_message_struct_and_trait_impls(|message_name, field_names| {
@@ -422,7 +430,7 @@ impl<'a> ParsedGetterFn<'a> {
     fn generate_message_struct_and_trait_impls(
         &self,
         model_ty: &TypePath,
-        crate_: &TokenStream,
+        crate_: &ThisCrate,
     ) -> TokenStream {
         self.common
             .generate_message_struct_and_trait_impls(|message_name, field_names| {

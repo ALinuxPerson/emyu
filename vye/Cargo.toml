@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["std"]
-frb-compat = ["vye-base/frb-compat"]
+frb-compat = ["vye-base/frb-compat", "vye-macros/frb-compat"]
 tokio = ["vye-base/tokio"]
 macros = ["dep:vye-macros"]
 std = ["vye-base/std"]

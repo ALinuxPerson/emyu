@@ -1,4 +1,7 @@
 use darling::FromAttributes;
+use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro_crate::{crate_name, FoundCrate};
+use quote::{quote, ToTokens};
 use syn::{
     Attribute, Block, Signature, Token, Type, Visibility, braced,
     parse::{Parse, ParseStream},
@@ -79,3 +82,33 @@ pub fn extract_vye_attrs<T: FromAttributes>(
         .collect();
     Ok((remaining_attributes, value))
 }
+
+#[derive(Clone)]
+pub struct ThisCrate(TokenStream);
+
+impl Default for ThisCrate {
+    fn default() -> Self {
+        match crate_name("vye").expect("`vye` crate should be present in `Cargo.toml`") {
+            FoundCrate::Itself => Self(quote! { crate }),
+            FoundCrate::Name(name) => {
+                let ident = Ident::new(&name, Span::call_site());
+                Self(quote! { #ident })
+            }
+        }
+    }
+}
+
+impl ToTokens for ThisCrate {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.0.to_tokens(tokens);
+    }
+}
+
+pub fn frb(tokens: TokenStream, crate_: &ThisCrate) -> TokenStream {
+    quote! { #crate_::__macros::flutter_rust_bridge::frb(#tokens) }
+}
+
+pub fn frb_sync(crate_: &ThisCrate) -> TokenStream {
+    frb(quote! { sync }, crate_)
+}
+

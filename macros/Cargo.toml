@@ -6,9 +6,12 @@ edition = "2024"
 [lib]
 proc-macro = true
 
+[features]
+frb-compat = []
+
 [dependencies]
 convert_case = "0.10.0"
-darling = "0.21.3"
+darling = "0.23.0"
 either = "1.15.0"
 proc-macro-crate = "3.4.0"
 proc-macro2 = "1.0.103"

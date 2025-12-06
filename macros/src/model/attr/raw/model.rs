@@ -52,6 +52,10 @@ use crate::model::attr::raw::{MetaConfig, NameConfig};
 ///             ),
 ///         ),
 ///     ),
+///
+///     // (only when `frb-compat` feature is enabled) Adds special attributes and behavior for
+///     // Flutter-Rust-Bridge compatibility.
+///     frb,
 /// )]
 /// pub(crate) impl FooModel {
 ///     // The visibility of this function determines the visibility of the generated `new`
@@ -181,6 +185,23 @@ use crate::model::attr::raw::{MetaConfig, NameConfig};
 pub struct ModelArgs {
     #[darling(default)]
     pub dispatcher: Option<DispatcherDef>,
+
+    #[cfg(feature = "frb-compat")]
+    #[darling(default, rename = "frb")]
+    flutter_rust_bridge: bool,
+}
+
+impl ModelArgs {
+    pub const fn flutter_rust_bridge(&self) -> bool {
+        #[cfg(feature = "frb-compat")]
+        {
+            self.flutter_rust_bridge
+        }
+        #[cfg(not(feature = "frb-compat"))]
+        {
+            false
+        }
+    }
 }
 
 pub enum DispatcherDef {
@@ -217,4 +238,3 @@ pub struct DispatcherConfig {
     #[darling(default)]
     pub meta: Option<MetaConfig>,
 }
-

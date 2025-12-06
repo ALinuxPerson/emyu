@@ -3,10 +3,14 @@ mod which;
 
 use crate::model::attr::raw::{ProcessedMeta, ProcessedMetaRef};
 use convert_case::ccase;
-use proc_macro2::{Ident, Span};
-use quote::format_ident;
+use either::Either;
+use proc_macro2::{Ident, Span, TokenStream};
+use quote::{format_ident, quote};
+use std::iter;
 use syn::Meta;
 use which::{Dispatcher, Getter, Updater, With};
+use crate::utils;
+use crate::utils::ThisCrate;
 
 fn invalid_position_error(span: Span, expr: &str) -> syn::Error {
     syn::Error::new(span, format!("`{expr}` is not valid in this position"))
@@ -32,6 +36,26 @@ fn resolve_name_for_message(args: Option<&raw::MethodArgs>, fn_name: &Ident) -> 
         })
 }
 
+fn include_if_frb(
+    iter: impl IntoIterator<Item = ProcessedMeta>,
+    include: impl FnOnce() -> TokenStream,
+    flutter_rust_bridge: bool,
+) -> impl Iterator<Item = ProcessedMeta> {
+    if flutter_rust_bridge {
+        Either::Left(iter.into_iter().chain(iter::once(ProcessedMeta(include()))))
+    } else {
+        Either::Right(iter.into_iter())
+    }
+}
+
+fn frb_opaque(crate_: &ThisCrate) -> TokenStream {
+    utils::frb(quote! { opaque }, crate_)
+}
+
+fn frb_sync_getter(crate_: &ThisCrate) -> TokenStream {
+    utils::frb(quote! { sync, getter }, crate_)
+}
+
 macro_rules! validate {
     (
         $span:expr,
@@ -48,9 +72,9 @@ macro_rules! validate {
 }
 
 pub struct ModelArgs {
-    pub dispatcher: Properties,
-    pub updater: Properties,
-    pub getter: Properties,
+    pub dispatcher: ModelProperties,
+    pub updater: ModelProperties,
+    pub getter: ModelProperties,
 }
 
 impl ModelArgs {
@@ -66,36 +90,69 @@ impl ModelArgs {
         Ok(())
     }
 
-    pub fn parse(raw: raw::ModelArgs, model_name: &Ident, span: Span) -> syn::Result<Self> {
+    pub fn parse(raw: raw::ModelArgs, model_name: &Ident, crate_: &ThisCrate, span: Span) -> syn::Result<Self> {
+        let flutter_rust_bridge = raw.flutter_rust_bridge();
         let config = raw
             .dispatcher
             .ok_or_else(|| syn::Error::new(span, "`dispatcher` is required"))?
             .into_config();
         Self::validate(&config, span)?;
-        Ok(Self::from_config(config, model_name))
+        Ok(Self::from_config(config, model_name, crate_, flutter_rust_bridge))
     }
 
-    fn from_config(config: raw::DispatcherConfig, model_name: &Ident) -> Self {
+    fn from_config(
+        config: raw::DispatcherConfig,
+        model_name: &Ident,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> Self {
         Self {
-            dispatcher: Properties::from_config::<Dispatcher>(&config, model_name),
-            updater: Properties::from_config::<Updater>(&config, model_name),
-            getter: Properties::from_config::<Getter>(&config, model_name),
+            dispatcher: ModelProperties::from_config::<Dispatcher>(
+                &config,
+                model_name,
+                crate_,
+                flutter_rust_bridge,
+            ),
+            updater: ModelProperties::from_config::<Updater>(
+                &config,
+                model_name,
+                crate_,
+                flutter_rust_bridge,
+            ),
+            getter: ModelProperties::from_config::<Getter>(
+                &config,
+                model_name,
+                crate_,
+                flutter_rust_bridge,
+            ),
         }
     }
 }
 
-pub struct Properties {
+pub struct ModelProperties {
     pub name: Ident,
     pub outer_meta: Vec<ProcessedMeta>,
     pub inner_meta: Vec<ProcessedMeta>,
 }
 
-impl Properties {
-    fn from_config<W: With>(config: &raw::DispatcherConfig, model_name: &Ident) -> Self {
+impl ModelProperties {
+    fn from_config<W: With>(
+        config: &raw::DispatcherConfig,
+        model_name: &Ident,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> Self {
         Self {
             name: resolve_name_for_model::<W>(config.name.as_ref(), model_name),
-            outer_meta: W::outer_meta_owned(&config.meta).collect::<Vec<_>>(),
-            inner_meta: W::inner_meta_owned(&config.meta).collect::<Vec<_>>(),
+            outer_meta: {
+                include_if_frb(
+                    W::outer_meta_owned(&config.meta),
+                    || frb_opaque(crate_),
+                    flutter_rust_bridge,
+                )
+                .collect()
+            },
+            inner_meta: W::inner_meta_owned(&config.meta).collect(),
         }
     }
 }
@@ -116,14 +173,34 @@ impl NewMethodArgs {
         Ok(())
     }
 
-    pub fn parse(raw: raw::MethodArgs, span: Span) -> syn::Result<Self> {
+    pub fn parse(raw: raw::MethodArgs, span: Span, crate_: &ThisCrate, flutter_rust_bridge: bool) -> syn::Result<Self> {
         Self::validate(&raw, span)?;
         Ok(Self {
-            dispatcher_meta: Dispatcher::outer_meta_owned(&raw.meta).collect(),
-            updater_meta: Updater::outer_meta_owned(&raw.meta).collect(),
-            getter_meta: Getter::outer_meta_owned(&raw.meta).collect(),
+            dispatcher_meta: include_if_frb(
+                Dispatcher::outer_meta_owned(&raw.meta),
+                || utils::frb_sync(crate_),
+                flutter_rust_bridge,
+            )
+            .collect(),
+            updater_meta: include_if_frb(
+                Updater::outer_meta_owned(&raw.meta),
+                || utils::frb_sync(crate_),
+                flutter_rust_bridge,
+            )
+            .collect(),
+            getter_meta: include_if_frb(
+                Getter::outer_meta_owned(&raw.meta),
+                || utils::frb_sync(crate_),
+                flutter_rust_bridge,
+            )
+            .collect(),
         })
     }
+}
+
+enum UpdaterOrGetter {
+    Updater,
+    Getter,
 }
 
 pub struct UpdaterGetterMethodArgs {
@@ -134,12 +211,40 @@ pub struct UpdaterGetterMethodArgs {
 }
 
 impl UpdaterGetterMethodArgs {
-    fn parse<W: With>(raw: raw::MethodArgs, fn_name: &Ident) -> Self {
+    fn parse<W: With>(
+        raw: raw::MethodArgs,
+        fn_name: &Ident,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+        updater_or_getter: UpdaterOrGetter,
+    ) -> Self {
         Self {
             message: MessageStructProperties::parse(&raw, fn_name),
             fn_name: fn_name.clone(),
-            dispatcher_fn_meta: Dispatcher::fn_meta_owned(&raw.meta).collect(),
-            fn_meta: W::fn_meta_owned(&raw.meta).collect(),
+            dispatcher_fn_meta: {
+                if flutter_rust_bridge && matches!(updater_or_getter, UpdaterOrGetter::Getter) {
+                    include_if_frb(
+                        Dispatcher::fn_meta_owned(&raw.meta),
+                        || frb_sync_getter(crate_),
+                        flutter_rust_bridge,
+                    )
+                    .collect()
+                } else {
+                    Dispatcher::fn_meta_owned(&raw.meta).collect()
+                }
+            },
+            fn_meta: {
+                if flutter_rust_bridge && matches!(updater_or_getter, UpdaterOrGetter::Getter) {
+                    include_if_frb(
+                        W::fn_meta_owned(&raw.meta),
+                        || frb_sync_getter(crate_),
+                        flutter_rust_bridge,
+                    )
+                    .collect()
+                } else {
+                    W::fn_meta_owned(&raw.meta).collect()
+                }
+            },
         }
     }
 
@@ -186,14 +291,38 @@ impl UpdaterGetterMethodArgs {
         Ok(())
     }
 
-    pub fn parse_updater(raw: raw::MethodArgs, fn_name: &Ident, span: Span) -> syn::Result<Self> {
+    pub fn parse_updater(
+        raw: raw::MethodArgs,
+        fn_name: &Ident,
+        span: Span,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> syn::Result<Self> {
         Self::validate_updater(&raw, span)?;
-        Ok(Self::parse::<Updater>(raw, fn_name))
+        Ok(Self::parse::<Updater>(
+            raw,
+            fn_name,
+            crate_,
+            flutter_rust_bridge,
+            UpdaterOrGetter::Updater,
+        ))
     }
 
-    pub fn parse_getter(raw: raw::MethodArgs, fn_name: &Ident, span: Span) -> syn::Result<Self> {
+    pub fn parse_getter(
+        raw: raw::MethodArgs,
+        fn_name: &Ident,
+        span: Span,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> syn::Result<Self> {
         Self::validate_getter(&raw, span)?;
-        Ok(Self::parse::<Getter>(raw, fn_name))
+        Ok(Self::parse::<Getter>(
+            raw,
+            fn_name,
+            crate_,
+            flutter_rust_bridge,
+            UpdaterOrGetter::Getter,
+        ))
     }
 }
 
