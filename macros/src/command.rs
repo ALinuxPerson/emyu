@@ -106,11 +106,10 @@ impl<'a> CommandContext<'a> {
         validate_signature(&item.sig)?;
         let (fields, ctx) = item.sig.inputs.iter().map(ParsedField::new).try_fold(
             (Vec::with_capacity(item.sig.inputs.len()), None),
-            |(mut fields, mut ctx), field| {
+            |(mut fields, _ctx), field| {
                 let (field, field_ctx) = field?;
                 fields.push(field);
-                ctx = field_ctx;
-                Ok::<_, syn::Error>((fields, ctx))
+                Ok::<_, syn::Error>((fields, field_ctx))
             },
         )?;
         let (ctx_name, for_app_ty) = match ctx {
