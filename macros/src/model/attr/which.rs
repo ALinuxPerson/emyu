@@ -27,7 +27,7 @@ pub trait With {
     }
 
     fn outer_meta_owned(meta: &Option<raw::MetaConfig>) -> impl Iterator<Item = ProcessedMeta> {
-        Self::outer_meta(meta).map(ProcessedMetaRef::to_owned)
+        Self::outer_meta(meta).map(ProcessedMetaRef::into_owned)
     }
 
     fn inner_meta(meta: &Option<raw::MetaConfig>) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
@@ -41,7 +41,7 @@ pub trait With {
     }
 
     fn inner_meta_owned(meta: &Option<raw::MetaConfig>) -> impl Iterator<Item = ProcessedMeta> {
-        Self::inner_meta(meta).map(ProcessedMetaRef::to_owned)
+        Self::inner_meta(meta).map(ProcessedMetaRef::into_owned)
     }
 
     fn fn_meta(meta: &Option<raw::MetaConfig>) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
@@ -49,29 +49,7 @@ pub trait With {
     }
 
     fn fn_meta_owned(meta: &Option<raw::MetaConfig>) -> impl Iterator<Item = ProcessedMeta> {
-        Self::fn_meta(meta).map(ProcessedMetaRef::to_owned)
-    }
-}
-
-pub enum Dispatcher {}
-
-impl With for Dispatcher {
-    const SUFFIX: &'static str = "Dispatcher";
-
-    fn name(name: &raw::NameConfig) -> &Option<Ident> {
-        &name.dispatcher
-    }
-
-    fn outer_meta_impl(meta: &raw::MetaConfig) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
-        meta.dispatcher()
-    }
-
-    fn inner_meta_impl(meta: &raw::InnerMetaConfig) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
-        meta.dispatcher()
-    }
-
-    fn fn_meta_impl(meta: &raw::MetaConfig) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
-        meta.dispatcher_fn()
+        Self::fn_meta(meta).map(ProcessedMetaRef::into_owned)
     }
 }
 

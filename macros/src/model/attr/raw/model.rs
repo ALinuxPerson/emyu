@@ -1,29 +1,48 @@
-use darling::ast::NestedMeta;
-use darling::FromMeta;
 use crate::model::attr::raw::{MetaConfig, NameConfig};
+use darling::FromMeta;
+use darling::ast::NestedMeta;
+use proc_macro2::{Ident, Span};
+use syn::Meta;
 
 /// ```rust
 /// #[vye::model(
+///     // Specify the application this model is for. Required.
+///     for_app = "MyCoolApp",
+///
+///     // Specify the name of the generated message enum. By default, this is the model name
+///     // stripped of "Model" and suffixed with "Message". For example, `FooModel` becomes
+///     // `FooMessage`. The visibility of the `impl` block determines the visibility of the
+///     // generated message enum.
+///     message = "MyCoolMessage",
+///
+///     // More customizability options
+///     message(
+///         name = "MyCustomMessageEnum",   // explicitly specifies the name of the message enum
+///
+///         // Specifies the outer attributes of the message enum
+///         // `#[derive(Debug, Clone)] pub enum MyCustomMessageEnum { /* ... */ }`
+///         meta(derive(Debug, Clone, Serialize)),
+///         meta(serde(tag = "type")), // this can be specified multiple times
+///     ),
+///
 ///     /*
-///     If passed, generates a wrapped dispatcher, updater, and getter struct. A corresponding
-///     `fn split() -> (Updater, Getter)` will also be generated.
+///     If passed, generates a wrapped updater and getter struct. Required.
 ///
 ///     `#[vye::model]` must be applied to an `impl` block: `pub impl Model { /* ... */ }`
 ///
 ///     The visibility of the `impl` block can be declared. This affects the visibility of the
-///     generated dispatcher, updater, and getter structs.
+///     generated updater and getter structs.
 ///     */
 ///
-///     // Generates a dispatcher with default settings. Generated structs will be named according
-///     // to the name of their model. E.g. if the model is `FooModel`, the structs will be named
-///     // `FooDispatcher`, `FooUpdater`, and `FooGetter`.
+///     // Generates an updater and getter with default settings. Generated structs will be named
+///     // according to the name of their model. E.g. if the model is `FooModel`, the structs will
+///     // be named `FooUpdater` and `FooGetter`.
 ///     dispatcher,
 ///
 ///     // More customizability options
 ///     dispatcher(
 ///         // Name config
 ///         name(
-///             dispatcher = "FooDispatcher", // explicitly specifies the name of the dispatcher
 ///             updater = "FooUpdater",       // explicitly specifies the name of the updater
 ///             getter = "FooGetter",         // explicitly specifies the name of the getter
 ///         ),
@@ -31,22 +50,19 @@ use crate::model::attr::raw::{MetaConfig, NameConfig};
 ///         // Attributes config
 ///         meta(
 ///             // These attributes operate on the outer struct:
-///             // `#[derive(Debug)] pub struct FooDispatcher(vye::Dispatcher<FooModel>);`
+///             // `#[derive(Debug)] pub struct FooUpdater(vye::Updater<FooModel>);`
 ///
 ///             // Common attributes for all generated structs
 ///             base(derive(Debug)),
-///             // `base`, `dispatcher`, `updater`, and `getter` can be specified multiple times
+///             // `base`, `updater`, and `getter` can be specified multiple times
 ///             base(derive(PartialOrd)),
-///             dispatcher(derive(Clone)),     // attributes for the generated `dispatcher` struct
 ///             updater(derive(PartialEq)),    // attributes for the generated `updater` struct
 ///             getter(derive(Serialize)),     // attributes for the generated `getter` struct
 ///
 ///             // These attributes operate on the inner value:
-///             // `pub struct FooDispatcher(#[foo] vye::Dispatcher<FooModel>);`
+///             // `pub struct FooUpdater(#[foo] vye::Updater<FooModel>);`
 ///             inner(
-///                 dispatcher(foo), // inner attributes for the generated `dispatcher` struct
-///                 // `dispatcher`, `updater`, and `getter` can be specified multiple times
-///                 dispatcher(bar),
+///                 // `updater` and `getter` can be specified multiple times
 ///                 updater(baz),    // inner attributes for the generated `updater` struct
 ///                 getter(qux),     // inner attributes for the generated `getter` struct
 ///             ),
@@ -59,58 +75,47 @@ use crate::model::attr::raw::{MetaConfig, NameConfig};
 /// )]
 /// pub(crate) impl FooModel {
 ///     // The visibility of this function determines the visibility of the generated `new`
-///     // functions for the dispatcher, getter, and updater structs.
+///     // functions for the getter and updater structs.
 ///     #[vye(
 ///         // Attributes config:
-///         // `#[some_meta] fn new(dispatcher: vye::Dispatcher<FooModel>) -> { /* ... */ }`
+///         // `#[some_meta] fn new(updater: vye::Updater<FooModel>) -> { /* ... */ }`
 ///         meta(
 ///             // Common attributes of the `new` function for all generated structs
 ///             base(foo),
-///             // `base`, `dispatcher`, `updater`, and `getter` can be specified multiple times
+///             // `base`, `updater`, and `getter` can be specified multiple times
 ///             base(bar),
-///             dispatcher(baz), // attributes for the generated `dispatcher` struct
 ///             updater(qux),    // attributes for the generated `updater` struct
 ///             getter(quux),    // attributes for the generated `getter` struct
 ///         ),
 ///     )]
 ///     pub fn new();
 ///
-///     /// Any attributes on this function will be applied to the `split` function on the
-///     /// dispatcher struct.
-///     pub fn split();
-///
 ///     // An updater function.
 ///     // The function must follow this shape:
-///     // `$vis fn $fn_name[<T>](
+///     // `$vis fn $fn_name(
 ///     //    &mut self,
 ///     //    field: i32,
-///     //    [, generic: T,]
 ///     //    [, ctx: &mut UpdateContext<App>,]
 ///     //  )
 ///     // { /* ... */ }
 ///     // Meaning:
 ///     // - The header can only be the visibility followed by `fn`. No `async`, `const`, etc.
-///     // - While type generics _are_ allowed, lifetimes are NOT allowed.
+///     // - Generics are NOT allowed.
 ///     // - The `ctx` argument can be omitted for brevity.
 ///     // - The function must not return anything (void).
 ///     //
-///     // The visibility of the function determines the visibility of the generated message struct
-///     // and its visibility on the dispatcher and updater structs.
+///     // The visibility of the function determines its visibility on the updater struct.
 ///     //
-///     // Function names for the dispatcher and updater structs will inherit the name of this
-///     // function.
+///     // Function names for the updater struct will inherit the name of this function.
 ///     #[vye(
 ///         // Name config. If not passed, the message name will be the function name converted
-///         // to PascalCase with "Message" appended to it. For example, `set_name` becomes
-///         // `SetNameMessage`.
-///         message = "SetNameMessage",
+///         // to PascalCase. For example, `set_name` becomes `SetName`.
+///         message = "SetName",
 ///
 ///         // Attributes config, these can be specified multiple times:
 ///         // `#[some_meta] fn set_name(&mut self, message: SetNameMessage) -> { /* ... */ }`
 ///         meta(
 ///             message(derive(Clone)), // outer attributes for the message struct
-///             fns(foo),               // common attributes for the dispatcher and updater functions
-///             dispatcher(bar),        // attributes for the dispatcher function
 ///             updater(baz),           // attributes for the updater function
 ///         ),
 ///     )]
@@ -118,35 +123,28 @@ use crate::model::attr::raw::{MetaConfig, NameConfig};
 ///         &mut self,
 ///
 ///         // Any attributes declared on these arguments are pasted on the fields of the message
-///         // struct
+///         // variant
 ///         #[serde(rename = "pangalan")]
 ///         name: String,
 ///         ctx: &mut UpdateContext<MyCoolApp>, // this can be omitted if not used
 ///     ) {
 ///         self.name = name;
-///         ctx.mark_dirty(Region::Root);
 ///     }
 ///
 ///     // A getter function.
 ///     // The function must follow this shape:
-///     // `$vis fn $fn_name[<T>](
-///     //    &self,
-///     //    field: i32,
-///     //    [, generic: T,]
-///     //  ) -> ReturnType
-///     // [{ /* ... */ } | ;]
+///     // `$vis fn $field_name(&self) -> Signal<ReturnType>;
 ///     // Meaning:
-///     // - The header can only be the visibility followed by `fn`. No `async`, `const`, etc.
-///     // - While type generics _are_ allowed, lifetimes are NOT allowed.
-///     // - The function must return a value.
-///     // - The function body CAN be omitted if there are no other arguments, the function name
-///     //   corresponds to a field in the model, and the type of the field implements Clone.
+///     // - The header CAN only be the visibility followed by `fn`. No `async`, `const`, etc.
+///     // - Generics are NOT allowed.
+///     // - The function must return a value wrapped in a `Signal<...>`.
+///     // - The function body MUST be omitted.
+///     // - The function name MUST correspond to a field on the model.
 ///     //
 ///     // The visibility of the function determines the visibility of the generated message struct
-///     // and its visibility on the dispatcher and getter structs.
+///     // and its visibility on the getter struct.
 ///     //
-///     // Function names for the dispatcher and getter structs will inherit the name of this
-///     // function.
+///     // Function name for the getter struct will inherit the name of this function.
 ///     #[vye(
 ///         // Name config. If not passed, the message name will be the function name converted
 ///         // to PascalCase with "Get" and "Message" as its prefix and suffix respectively.
@@ -157,32 +155,20 @@ use crate::model::attr::raw::{MetaConfig, NameConfig};
 ///         // `#[some_meta] fn location(&self, message: GetLocationMessage) -> String { /* ... */ }`
 ///         meta(
 ///             message(derive(Clone)), // outer attributes for the message struct
-///             fns(foo),               // common attributes for the dispatcher and getter functions
-///             dispatcher(bar),        // attributes for the dispatcher function
 ///             getter(baz),            // attributes for the getter function
 ///         ),
 ///     )]
-///     pub(super) fn location(
-///         &self,
-///         // Any attributes declared on these arguments are pasted on the fields of the message
-///         // struct
-///         #[serde(rename = "makeLowercase")]
-///         make_lowercase: bool,
-///     ) -> String {
-///         if make_lowercase {
-///             self.location.to_lowercase()
-///         } else {
-///             self.location.clone()
-///         }
-///     }
-///
-///     // This is equivalent to `Clone::clone(&self.name)` because the body is omitted.
-///     fn name(&self) -> String;
+///     pub(super) fn location(&self) -> Signal<String>;
 /// }
 /// ```
 #[derive(FromMeta)]
 #[darling(derive_syn_parse)]
 pub struct ModelArgs {
+    pub for_app: Ident,
+
+    #[darling(default)]
+    pub message: MessageConfig,
+
     #[darling(default)]
     pub dispatcher: Option<DispatcherDef>,
 
@@ -202,6 +188,44 @@ impl ModelArgs {
             false
         }
     }
+}
+
+pub enum MessageDef {
+    Named(Ident),
+    Config(Box<MessageConfig>),
+}
+
+impl MessageDef {
+    pub fn into_config(self) -> MessageConfig {
+        match self {
+            Self::Named(name) => MessageConfig {
+                name: Some(name),
+                ..Default::default()
+            },
+            Self::Config(config) => *config,
+        }
+    }
+}
+
+impl FromMeta for MessageDef {
+    // #[vye::model(message(...))]
+    fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
+        Ok(Self::Config(Box::new(MessageConfig::from_list(items)?)))
+    }
+
+    // #[vye::model(message = "MyMessage")]
+    fn from_string(value: &str) -> darling::Result<Self> {
+        Ok(Self::Named(Ident::new(value, Span::call_site())))
+    }
+}
+
+#[derive(FromMeta, Default)]
+pub struct MessageConfig {
+    #[darling(default)]
+    pub name: Option<Ident>,
+
+    #[darling(multiple)]
+    pub meta: Vec<Meta>,
 }
 
 pub enum DispatcherDef {

@@ -2,15 +2,15 @@ pub(super) mod raw;
 mod which;
 
 use crate::model::attr::raw::{ProcessedMeta, ProcessedMetaRef};
+use crate::utils;
+use crate::utils::ThisCrate;
 use convert_case::ccase;
 use either::Either;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use std::iter;
 use syn::Meta;
-use which::{Dispatcher, Getter, Updater, With};
-use crate::utils;
-use crate::utils::ThisCrate;
+use which::{Getter, Updater, With};
 
 fn invalid_position_error(span: Span, expr: &str) -> syn::Error {
     syn::Error::new(span, format!("`{expr}` is not valid in this position"))
@@ -30,10 +30,7 @@ fn resolve_name_for_model<W: With>(config: Option<&raw::NameConfig>, model_name:
 fn resolve_name_for_message(args: Option<&raw::MethodArgs>, fn_name: &Ident) -> Ident {
     args.as_ref()
         .and_then(|n| n.message.clone())
-        .unwrap_or_else(|| {
-            let fn_name = ccase!(pascal, fn_name.to_string());
-            format_ident!("{fn_name}Message")
-        })
+        .unwrap_or_else(|| Ident::new(&ccase!(pascal, fn_name.to_string()), Span::call_site()))
 }
 
 fn include_if_frb(
@@ -46,10 +43,6 @@ fn include_if_frb(
     } else {
         Either::Right(iter.into_iter())
     }
-}
-
-fn frb_opaque(crate_: &ThisCrate) -> TokenStream {
-    utils::frb(quote! { opaque }, crate_)
 }
 
 fn frb_sync_getter(crate_: &ThisCrate) -> TokenStream {
@@ -72,9 +65,10 @@ macro_rules! validate {
 }
 
 pub struct ModelArgs {
-    pub dispatcher: ModelProperties,
+    pub message: MessageEnumProperties,
     pub updater: ModelProperties,
     pub getter: ModelProperties,
+    pub for_app: Ident,
 }
 
 impl ModelArgs {
@@ -90,29 +84,40 @@ impl ModelArgs {
         Ok(())
     }
 
-    pub fn parse(raw: raw::ModelArgs, model_name: &Ident, crate_: &ThisCrate, span: Span) -> syn::Result<Self> {
+    pub fn parse(
+        raw: raw::ModelArgs,
+        model_name: &Ident,
+        crate_: &ThisCrate,
+        span: Span,
+    ) -> syn::Result<Self> {
         let flutter_rust_bridge = raw.flutter_rust_bridge();
         let config = raw
             .dispatcher
             .ok_or_else(|| syn::Error::new(span, "`dispatcher` is required"))?
             .into_config();
+        let message =
+            MessageEnumProperties::from_config(raw.message, model_name, crate_, flutter_rust_bridge);
         Self::validate(&config, span)?;
-        Ok(Self::from_config(config, model_name, crate_, flutter_rust_bridge))
+        Ok(Self::from_config(
+            config,
+            message,
+            raw.for_app,
+            model_name,
+            crate_,
+            flutter_rust_bridge,
+        ))
     }
 
     fn from_config(
         config: raw::DispatcherConfig,
+        message: MessageEnumProperties,
+        for_app: Ident,
         model_name: &Ident,
         crate_: &ThisCrate,
         flutter_rust_bridge: bool,
     ) -> Self {
         Self {
-            dispatcher: ModelProperties::from_config::<Dispatcher>(
-                &config,
-                model_name,
-                crate_,
-                flutter_rust_bridge,
-            ),
+            message,
             updater: ModelProperties::from_config::<Updater>(
                 &config,
                 model_name,
@@ -125,6 +130,7 @@ impl ModelArgs {
                 crate_,
                 flutter_rust_bridge,
             ),
+            for_app,
         }
     }
 }
@@ -147,7 +153,7 @@ impl ModelProperties {
             outer_meta: {
                 include_if_frb(
                     W::outer_meta_owned(&config.meta),
-                    || frb_opaque(crate_),
+                    || utils::frb_opaque(crate_),
                     flutter_rust_bridge,
                 )
                 .collect()
@@ -157,9 +163,39 @@ impl ModelProperties {
     }
 }
 
+pub struct MessageEnumProperties {
+    pub name: Ident,
+    pub outer_meta: Vec<ProcessedMeta>,
+}
+
+impl MessageEnumProperties {
+    pub fn from_config(
+        config: raw::MessageConfig,
+        model_name: &Ident,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> Self {
+        Self {
+            name: config.name.unwrap_or_else(|| {
+                let model_name = model_name.to_string();
+                let model_name = model_name.strip_suffix("Model").unwrap_or(&model_name);
+                format_ident!("{model_name}Message")
+            }),
+            outer_meta: include_if_frb(
+                config
+                    .meta
+                    .iter()
+                    .map(ProcessedMetaRef::process)
+                    .map(ProcessedMetaRef::into_owned),
+                || utils::frb_opaque(crate_),
+                flutter_rust_bridge,
+            ).collect(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NewMethodArgs {
-    pub dispatcher_meta: Vec<ProcessedMeta>,
     pub updater_meta: Vec<ProcessedMeta>,
     pub getter_meta: Vec<ProcessedMeta>,
 }
@@ -173,15 +209,14 @@ impl NewMethodArgs {
         Ok(())
     }
 
-    pub fn parse(raw: raw::MethodArgs, span: Span, crate_: &ThisCrate, flutter_rust_bridge: bool) -> syn::Result<Self> {
+    pub fn parse(
+        raw: raw::MethodArgs,
+        span: Span,
+        crate_: &ThisCrate,
+        flutter_rust_bridge: bool,
+    ) -> syn::Result<Self> {
         Self::validate(&raw, span)?;
         Ok(Self {
-            dispatcher_meta: include_if_frb(
-                Dispatcher::outer_meta_owned(&raw.meta),
-                || utils::frb_sync(crate_),
-                flutter_rust_bridge,
-            )
-            .collect(),
             updater_meta: include_if_frb(
                 Updater::outer_meta_owned(&raw.meta),
                 || utils::frb_sync(crate_),
@@ -204,9 +239,8 @@ enum UpdaterOrGetter {
 }
 
 pub struct UpdaterGetterMethodArgs {
-    pub message: MessageStructProperties,
+    pub message: MessageProperties,
     pub fn_name: Ident,
-    pub dispatcher_fn_meta: Vec<ProcessedMeta>,
     pub fn_meta: Vec<ProcessedMeta>,
 }
 
@@ -219,20 +253,8 @@ impl UpdaterGetterMethodArgs {
         updater_or_getter: UpdaterOrGetter,
     ) -> Self {
         Self {
-            message: MessageStructProperties::parse(&raw, fn_name),
+            message: MessageProperties::parse(&raw, fn_name),
             fn_name: fn_name.clone(),
-            dispatcher_fn_meta: {
-                if flutter_rust_bridge && matches!(updater_or_getter, UpdaterOrGetter::Getter) {
-                    include_if_frb(
-                        Dispatcher::fn_meta_owned(&raw.meta),
-                        || frb_sync_getter(crate_),
-                        flutter_rust_bridge,
-                    )
-                    .collect()
-                } else {
-                    Dispatcher::fn_meta_owned(&raw.meta).collect()
-                }
-            },
             fn_meta: {
                 if flutter_rust_bridge && matches!(updater_or_getter, UpdaterOrGetter::Getter) {
                     include_if_frb(
@@ -252,7 +274,6 @@ impl UpdaterGetterMethodArgs {
         if let Some(config) = &raw.name {
             validate! {
                 span, |v: &Option<Ident>| v.is_none();
-                &config.dispatcher => "#[vye(name(dispatcher = \"...\"))]",
                 &config.updater => "#[vye(name(updater = \"...\"))]",
                 &config.getter => "#[vye(name(getter = \"...\"))]",
             }
@@ -326,19 +347,19 @@ impl UpdaterGetterMethodArgs {
     }
 }
 
-pub struct MessageStructProperties {
+pub struct MessageProperties {
     pub name: Ident,
     pub outer_meta: Vec<ProcessedMeta>,
 }
 
-impl MessageStructProperties {
+impl MessageProperties {
     fn parse(raw: &raw::MethodArgs, fn_name: &Ident) -> Self {
         Self {
             name: resolve_name_for_message(Some(raw), fn_name),
             outer_meta: {
                 raw.meta
                     .as_ref()
-                    .map(|m| m.message().map(ProcessedMetaRef::to_owned).collect())
+                    .map(|m| m.message().map(ProcessedMetaRef::into_owned).collect())
                     .unwrap_or_default()
             },
         }

@@ -1,8 +1,8 @@
-mod model;
 mod method;
+mod model;
 
-pub use model::{ModelArgs, DispatcherConfig};
 pub use method::MethodArgs;
+pub use model::{DispatcherConfig, MessageConfig, MessageDef, ModelArgs};
 
 use darling::FromMeta;
 use proc_macro2::{Ident, TokenStream};
@@ -11,9 +11,6 @@ use syn::Meta;
 
 #[derive(FromMeta, Default)]
 pub struct NameConfig {
-    #[darling(default)]
-    pub dispatcher: Option<Ident>,
-
     #[darling(default)]
     pub updater: Option<Ident>,
 
@@ -24,17 +21,17 @@ pub struct NameConfig {
 pub struct ProcessedMetaRef<'a>(&'a TokenStream);
 
 impl<'a> ProcessedMetaRef<'a> {
-    fn process(meta: &'a Meta) -> Self {
+    pub(crate) fn process(meta: &'a Meta) -> Self {
         // strip out the outer `meta(...)`
         Self(
             &meta
                 .require_list()
-                .expect("should always be a` MetaList`")
+                .expect("should always be a `MetaList`")
                 .tokens,
         )
     }
-    
-    pub(crate) fn to_owned(self) -> ProcessedMeta {
+
+    pub(crate) fn into_owned(self) -> ProcessedMeta {
         ProcessedMeta(self.0.clone())
     }
 }
@@ -58,9 +55,6 @@ impl ToTokens for ProcessedMeta {
 pub struct MetaConfig {
     #[darling(multiple)]
     pub base: Vec<Meta>,
-
-    #[darling(multiple)]
-    pub dispatcher: Vec<Meta>,
 
     #[darling(multiple)]
     pub updater: Vec<Meta>,
@@ -89,10 +83,6 @@ impl MetaConfig {
             .map(ProcessedMetaRef::process)
     }
 
-    pub fn dispatcher(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
-        self.field_with(|m| &m.dispatcher)
-    }
-
     pub fn updater(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
         self.field_with(|m| &m.updater)
     }
@@ -111,11 +101,6 @@ impl MetaConfig {
         self.field_with(|m| &m.fns)
     }
 
-    pub fn dispatcher_fn(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
-        self.fns()
-            .chain(self.dispatcher.iter().map(ProcessedMetaRef::process))
-    }
-
     pub fn updater_fn(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
         self.fns()
             .chain(self.updater.iter().map(ProcessedMetaRef::process))
@@ -130,9 +115,6 @@ impl MetaConfig {
 #[derive(FromMeta)]
 pub struct InnerMetaConfig {
     #[darling(multiple)]
-    pub dispatcher: Vec<Meta>,
-
-    #[darling(multiple)]
     pub updater: Vec<Meta>,
 
     #[darling(multiple)]
@@ -140,16 +122,10 @@ pub struct InnerMetaConfig {
 }
 
 impl InnerMetaConfig {
-    pub fn dispatcher(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
-        self.dispatcher
-            .iter()
-            .map(ProcessedMetaRef::process)
-    }
-    
     pub fn updater(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
         self.updater.iter().map(ProcessedMetaRef::process)
     }
-    
+
     pub fn getter(&self) -> impl Iterator<Item = ProcessedMetaRef<'_>> {
         self.getter.iter().map(ProcessedMetaRef::process)
     }

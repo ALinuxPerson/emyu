@@ -6,6 +6,7 @@ use syn::{
     Attribute, Block, Signature, Token, Type, Visibility, braced,
     parse::{Parse, ParseStream},
 };
+use crate::utils;
 
 pub struct MaybeStubFn {
     pub attrs: Vec<Attribute>,
@@ -111,4 +112,9 @@ pub fn frb(tokens: TokenStream, crate_: &ThisCrate) -> TokenStream {
 pub fn frb_sync(crate_: &ThisCrate) -> TokenStream {
     frb(quote! { sync }, crate_)
 }
+
+pub fn frb_opaque(crate_: &ThisCrate) -> TokenStream {
+    utils::frb(quote! { opaque }, crate_)
+}
+
 

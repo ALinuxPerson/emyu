@@ -9,7 +9,6 @@ use attr::ModelArgs;
 pub use attr::raw::ModelArgs as RawModelArgs;
 use proc_macro2::{Ident, TokenStream};
 use syn::{Attribute, Block, Type, TypePath, Visibility};
-use crate::model::attr::raw::ProcessedMeta;
 
 struct ModelContext<'a> {
     crate_: ThisCrate,
@@ -17,7 +16,6 @@ struct ModelContext<'a> {
     struct_vis: &'a Visibility,
     model_ty: &'a TypePath,
     new_fn: ParsedNewFn,
-    split_fn: ParsedSplitFn<'a>,
     updaters: Vec<ParsedUpdaterFn<'a>>,
     getters: Vec<ParsedGetterFn<'a>>,
 }
@@ -25,9 +23,6 @@ struct ModelContext<'a> {
 enum FnKind<'a> {
     // fn new();
     New(NewMethodArgs),
-
-    // fn split();
-    Split(&'a [Attribute]),
 
     // fn updater(&mut self) {}
     Updater {
@@ -40,7 +35,6 @@ enum FnKind<'a> {
     Getter {
         args: UpdaterGetterMethodArgs,
         ty: &'a Type,
-        block: Option<&'a Block>,
     },
 }
 
@@ -50,12 +44,12 @@ struct ParsedFnArg<'a> {
     ty: &'a Type,
 }
 
-struct ParsedNewSplitFn {
+struct ParsedNewFn {
     vis: Visibility,
     method_args: NewMethodArgs,
 }
 
-impl Default for ParsedNewSplitFn {
+impl Default for ParsedNewFn {
     fn default() -> Self {
         Self {
             vis: Visibility::Inherited,
@@ -64,40 +58,20 @@ impl Default for ParsedNewSplitFn {
     }
 }
 
-#[derive(Default)]
-struct ParsedNewFn(ParsedNewSplitFn);
-
-struct ParsedSplitFn<'a> {
-    vis: Visibility,
-    attrs: &'a [Attribute],
-    injected_meta: Vec<ProcessedMeta>,
-}
-
-impl Default for ParsedSplitFn<'static> {
-    fn default() -> Self {
-        Self {
-            vis: Visibility::Inherited,
-            attrs: &[],
-            injected_meta: Vec::new(),
-        }
-    }
-}
-
 struct ParsedUpdaterGetterFn<'a> {
     vis: &'a Visibility,
     method_args: UpdaterGetterMethodArgs,
-    fn_args: Vec<ParsedFnArg<'a>>,
 }
 
 struct ParsedUpdaterFn<'a> {
     common: ParsedUpdaterGetterFn<'a>,
+    fn_args: Vec<ParsedFnArg<'a>>,
     ctx: Option<&'a Ident>,
     block: &'a Block,
 }
 
 struct ParsedGetterFn<'a> {
     common: ParsedUpdaterGetterFn<'a>,
-    block: Option<&'a Block>,
     ret_ty: &'a Type,
 }
 
