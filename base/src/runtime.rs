@@ -1,7 +1,7 @@
 use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
 use crate::{
-    Dispatcher, DynInterceptor, FlushSignals, Interceptor, InterceptorWrapper, ModelBase,
-    ModelBaseReader, ModelHandler, ModelMessage, ModelWithRegion, Updater, VRWLockReadGuard,
+    Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelBaseReader,
+    ModelHandler, ModelMessage, Updater, VRWLockReadGuard,
 };
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -43,10 +43,6 @@ pub struct DirtyRegions<A: Application>(HashSet<A::RegionId>);
 impl<A: Application> DirtyRegions<A> {
     pub fn mark_with(&mut self, region: A::RegionId) {
         self.0.insert(region);
-    }
-
-    pub fn mark<M: ModelWithRegion<ForApp = A>>(&mut self) {
-        self.mark_with(M::REGION)
     }
 
     pub fn is_dirty(&self, region: &A::RegionId) -> bool {
