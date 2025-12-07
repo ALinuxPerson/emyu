@@ -2,7 +2,7 @@ use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMe
 use crate::maybe::MaybeSendSync;
 use crate::{
     Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelBaseReader,
-    ModelHandler, ModelMessage, Updater, VRWLockReadGuard,
+    Updater, VRWLockReadGuard,
 };
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -98,11 +98,7 @@ impl<'rt, A: Application> CommandContext<'rt, A> {
         self.world.get_mut()
     }
 
-    pub async fn send_message<Msg>(&mut self, message: Msg)
-    where
-        Msg: ModelMessage,
-        A::RootModel: ModelHandler<Msg>,
-    {
+    pub async fn send_message(&mut self, message: <A::RootModel as Model>::Message) {
         self.updater.send(message).await
     }
 }
@@ -299,10 +295,9 @@ impl<A: Application> MvuRuntimeBuilder<A> {
         self
     }
 
-    pub fn interceptor<M, Msg>(self, value: impl Interceptor<M, Msg>) -> Self
+    pub fn interceptor<M, Msg>(self, value: impl Interceptor<M>) -> Self
     where
         M: Model<ForApp = A>,
-        Msg: ModelMessage,
     {
         self.dyn_interceptor(InterceptorWrapper::new(value))
     }

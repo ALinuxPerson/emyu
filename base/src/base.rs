@@ -1,6 +1,6 @@
 use crate::dispatcher::MvuRuntimeChannelClosedError;
 use crate::maybe::{
-    MaybeSend, MaybeSendStatic, MaybeSendSync, MaybeSendSyncStatic, MaybeStatic, MaybeSync,
+    MaybeSend, MaybeSendStatic, MaybeSendSync, MaybeSendSyncStatic, MaybeStatic,
 };
 use crate::runtime::{CommandContext, UpdateContext};
 use crate::sync::VMutex;
@@ -35,14 +35,15 @@ where
     type RegionId = RegionId;
 }
 
-pub trait ModelMessage: MaybeSendSync + 'static {}
-
 pub trait ModelGetterMessage: MaybeSendStatic {
     type Data: MaybeSendStatic;
 }
 
 pub trait Model: MaybeSendSync + 'static {
     type ForApp: Application;
+    type Message: MaybeSend;
+
+    fn update(&mut self, message: Self::Message, ctx: &mut UpdateContext<Self::ForApp>);
 
     #[doc(hidden)]
     fn __accumulate_signals(
@@ -50,10 +51,6 @@ pub trait Model: MaybeSendSync + 'static {
         signals: &mut VecDeque<Arc<dyn FlushSignals>>,
         _token: __private::Token,
     );
-}
-
-pub trait ModelHandler<M: ModelMessage>: Model {
-    fn update(&mut self, message: M, ctx: &mut UpdateContext<Self::ForApp>);
 }
 
 pub trait ModelGetterHandler<M: ModelGetterMessage>: Model {
@@ -113,7 +110,7 @@ impl<M> ModelBase<M> {
     }
 }
 
-pub type Lens<Parent, Child> = fn(&Parent) -> &ModelBase<Child>;
+pub type Lens<MParent, MChild> = fn(&<MChild as Model>::Message) -> <MParent as Model>::Message;
 
 #[macro_export]
 macro_rules! lens {
@@ -123,10 +120,7 @@ macro_rules! lens {
 }
 
 impl<M: Model> ModelBase<M> {
-    pub fn update<Msg>(&self, message: Msg, ctx: &mut UpdateContext<M::ForApp>)
-    where
-        Msg: ModelMessage,
-        M: ModelHandler<Msg>,
+    pub fn update(&self, message: M::Message, ctx: &mut UpdateContext<M::ForApp>)
     {
         self.write().update(message, ctx)
     }
@@ -139,7 +133,7 @@ impl<M: Model> ModelBase<M> {
         self.read().getter(message)
     }
 
-    pub fn zoom<Child>(&self, lens: Lens<M, Child>) -> ModelBase<Child>
+    pub fn zoom<Child>(&self, lens: fn(&M) -> &ModelBase<Child>) -> ModelBase<Child>
     where
         Child: Model<ForApp = M::ForApp>,
     {
@@ -179,7 +173,7 @@ impl<M: Model> ModelBaseReader<M> {
         self.0.getter(message)
     }
 
-    pub fn zoom<Child>(&self, lens: Lens<M, Child>) -> ModelBaseReader<Child>
+    pub fn zoom<Child>(&self, lens: fn(&M) -> &ModelBase<Child>) -> ModelBaseReader<Child>
     where
         Child: Model<ForApp = M::ForApp>,
     {
@@ -206,49 +200,46 @@ where
     }
 }
 
-pub trait Interceptor<M, Msg>: MaybeSendSync + 'static
+pub trait Interceptor<M>: MaybeSendSync + 'static
 where
     M: Model,
-    Msg: ModelMessage,
 {
-    fn intercept(&self, model: ModelBaseReader<M>, message: &Msg);
+    fn intercept(&self, model: ModelBaseReader<M>, message: &M::Message);
 }
 
-impl<M, Msg, F> Interceptor<M, Msg> for F
+impl<M, F> Interceptor<M> for F
 where
     M: Model,
-    Msg: ModelMessage,
-    F: Fn(ModelBaseReader<M>, &Msg) + MaybeSendSync + 'static,
+    F: Fn(ModelBaseReader<M>, &M::Message) + MaybeSendSync + 'static,
 {
-    fn intercept(&self, model: ModelBaseReader<M>, message: &Msg) {
+    fn intercept(&self, model: ModelBaseReader<M>, message: &M::Message) {
         self(model, message)
     }
 }
 
-pub struct InterceptorWrapper<M, Msg, I> {
+pub struct InterceptorWrapper<M, I> {
     interceptor: I,
-    _marker: PhantomData<(M, Msg)>,
+    _model: PhantomData<M>,
 }
 
-impl<M, Msg, I> InterceptorWrapper<M, Msg, I> {
+impl<M, I> InterceptorWrapper<M, I> {
     pub fn new(interceptor: I) -> Self {
         Self {
             interceptor,
-            _marker: PhantomData,
+            _model: PhantomData,
         }
     }
 }
 
-impl<M, Msg, I> DynInterceptor for InterceptorWrapper<M, Msg, I>
+impl<M, I> DynInterceptor for InterceptorWrapper<M, I>
 where
     M: Model,
-    Msg: ModelMessage + MaybeSync,
-    I: Interceptor<M, Msg>,
+    I: Interceptor<M>,
 {
     fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
         if let (Some(model), Some(message)) = (
             model.downcast_ref::<ModelBase<M>>(),
-            message.downcast_ref::<Msg>(),
+            message.downcast_ref::<M::Message>(),
         ) {
             let model_reader = ModelBaseReader(model.clone());
             self.interceptor.intercept(model_reader, message);

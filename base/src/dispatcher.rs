@@ -1,5 +1,8 @@
 use crate::runtime::UpdateAction;
-use crate::{Application, DynInterceptor, Lens, Model, ModelBase, ModelGetterHandler, ModelGetterMessage, ModelHandler, ModelMessage, UpdateContext, __private};
+use crate::{
+    __private, Application, DynInterceptor, Model, ModelBase, ModelGetterHandler,
+    ModelGetterMessage, UpdateContext,
+};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use futures::SinkExt;
@@ -28,11 +31,7 @@ pub struct Dispatcher<M: Model> {
 }
 
 impl<M: Model> Dispatcher<M> {
-    pub async fn try_send<Msg>(&mut self, message: Msg) -> Result<(), MvuRuntimeChannelClosedError>
-    where
-        Msg: ModelMessage,
-        M: ModelHandler<Msg>,
-    {
+    pub async fn try_send(&mut self, message: M::Message) -> Result<(), MvuRuntimeChannelClosedError> {
         for interceptor in self.interceptors.iter() {
             interceptor.intercept_dyn(&self.model.reader(), &message);
         }
@@ -49,11 +48,7 @@ impl<M: Model> Dispatcher<M> {
             .map_err(|_| MvuRuntimeChannelClosedError)
     }
 
-    pub async fn send<Msg>(&mut self, message: Msg)
-    where
-        Msg: ModelMessage,
-        M: ModelHandler<Msg>,
-    {
+    pub async fn send(&mut self, message: M::Message) {
         self.try_send(message)
             .await
             .expect("the channel to the mvu runtime is closed")
@@ -73,7 +68,7 @@ impl<M: Model> Dispatcher<M> {
 }
 
 impl<M: Model> Dispatcher<M> {
-    pub fn zoom<Child>(self, lens: Lens<M, Child>) -> Dispatcher<Child>
+    pub fn zoom<Child>(self, lens: fn(&M) -> &ModelBase<Child>) -> Dispatcher<Child>
     where
         Child: Model<ForApp = M::ForApp>,
     {
@@ -125,23 +120,16 @@ where
 pub struct Updater<M: Model>(Dispatcher<M>);
 
 impl<M: Model> Updater<M> {
-    pub async fn try_send<Msg>(&mut self, message: Msg) -> Result<(), MvuRuntimeChannelClosedError>
-    where
-        Msg: ModelMessage,
-        M: ModelHandler<Msg>,
+    pub async fn try_send(&mut self, message: M::Message) -> Result<(), MvuRuntimeChannelClosedError>
     {
         self.0.try_send(message).await
     }
 
-    pub async fn send<Msg>(&mut self, message: Msg)
-    where
-        Msg: ModelMessage,
-        M: ModelHandler<Msg>,
-    {
+    pub async fn send(&mut self, message: M::Message) {
         self.0.send(message).await
     }
 
-    pub fn zoom<Child>(self, lens: Lens<M, Child>) -> Updater<Child>
+    pub fn zoom<Child>(self, lens: fn(&M) -> &ModelBase<Child>) -> Updater<Child>
     where
         Child: Model<ForApp = M::ForApp>,
     {
@@ -166,7 +154,7 @@ impl<M: Model> Getter<M> {
         self.0.get(message)
     }
 
-    pub fn zoom<Child>(self, lens: Lens<M, Child>) -> Getter<Child>
+    pub fn zoom<Child>(self, lens: fn(&M) -> &ModelBase<Child>) -> Getter<Child>
     where
         Child: Model<ForApp = M::ForApp>,
     {
