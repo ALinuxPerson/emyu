@@ -1,4 +1,7 @@
 use crate::dispatcher::MvuRuntimeChannelClosedError;
+use crate::maybe::{
+    MaybeSend, MaybeSendStatic, MaybeSendSync, MaybeSendSyncStatic, MaybeStatic, MaybeSync,
+};
 use crate::runtime::{CommandContext, UpdateContext};
 use crate::sync::VMutex;
 use crate::{
@@ -16,9 +19,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
-pub trait Application: 'static {
+pub trait Application: MaybeStatic {
     type RootModel: Model<ForApp = Self>;
-    type RegionId: Debug + Eq + Hash + Send + Sync;
+    type RegionId: Debug + Eq + Hash + MaybeSendSync;
 }
 
 pub struct AdHocApp<RootModel, RegionId = ()>(PhantomData<(RootModel, RegionId)>);
@@ -26,19 +29,19 @@ pub struct AdHocApp<RootModel, RegionId = ()>(PhantomData<(RootModel, RegionId)>
 impl<RootModel, RegionId> Application for AdHocApp<RootModel, RegionId>
 where
     RootModel: Model<ForApp = AdHocApp<RootModel, RegionId>>,
-    RegionId: Debug + Eq + Hash + Send + Sync + 'static,
+    RegionId: Debug + Eq + Hash + MaybeSendSyncStatic,
 {
     type RootModel = RootModel;
     type RegionId = RegionId;
 }
 
-pub trait ModelMessage: Send + 'static {}
+pub trait ModelMessage: MaybeSendSync + 'static {}
 
-pub trait ModelGetterMessage: Send + 'static {
-    type Data: Send + 'static;
+pub trait ModelGetterMessage: MaybeSendStatic {
+    type Data: MaybeSendStatic;
 }
 
-pub trait Model: Send + Sync + 'static {
+pub trait Model: MaybeSendSync + 'static {
     type ForApp: Application;
 
     #[doc(hidden)]
@@ -58,7 +61,7 @@ pub trait ModelGetterHandler<M: ModelGetterMessage>: Model {
 }
 
 #[async_trait]
-pub trait Command: Debug + Send + Sync {
+pub trait Command: Debug + MaybeSendSync {
     type ForApp: Application;
 
     async fn apply(&mut self, ctx: &mut CommandContext<'_, Self::ForApp>);
@@ -190,20 +193,20 @@ impl<M> Clone for ModelBaseReader<M> {
     }
 }
 
-pub trait DynInterceptor: Send + Sync + 'static {
+pub trait DynInterceptor: MaybeSendSync + 'static {
     fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any);
 }
 
 impl<F> DynInterceptor for F
 where
-    F: Fn(&dyn Any, &dyn Any) + Send + Sync + 'static,
+    F: Fn(&dyn Any, &dyn Any) + MaybeSendSync + 'static,
 {
     fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
         self(model, message)
     }
 }
 
-pub trait Interceptor<M, Msg>: Send + Sync + 'static
+pub trait Interceptor<M, Msg>: MaybeSendSync + 'static
 where
     M: Model,
     Msg: ModelMessage,
@@ -215,7 +218,7 @@ impl<M, Msg, F> Interceptor<M, Msg> for F
 where
     M: Model,
     Msg: ModelMessage,
-    F: Fn(ModelBaseReader<M>, &Msg) + Send + Sync + 'static,
+    F: Fn(ModelBaseReader<M>, &Msg) + MaybeSendSync + 'static,
 {
     fn intercept(&self, model: ModelBaseReader<M>, message: &Msg) {
         self(model, message)
@@ -239,7 +242,7 @@ impl<M, Msg, I> InterceptorWrapper<M, Msg, I> {
 impl<M, Msg, I> DynInterceptor for InterceptorWrapper<M, Msg, I>
 where
     M: Model,
-    Msg: ModelMessage + Sync,
+    Msg: ModelMessage + MaybeSync,
     I: Interceptor<M, Msg>,
 {
     fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
@@ -284,7 +287,7 @@ impl<T> Signal<T> {
     #[doc(hidden)]
     pub fn __to_dyn_flush_signals(&self, _: __private::Token) -> Arc<dyn FlushSignals>
     where
-        T: Send + Sync + 'static,
+        T: MaybeSendSync + 'static,
     {
         Arc::clone(&self.0) as _
     }
@@ -303,11 +306,11 @@ struct SignalRepr<T> {
 }
 
 #[doc(hidden)]
-pub trait FlushSignals: Send {
+pub trait FlushSignals: MaybeSend {
     fn __flush(&mut self, _token: __private::Token);
 }
 
-impl<T: Send + Sync> FlushSignals for SignalRepr<T> {
+impl<T: MaybeSendSync> FlushSignals for SignalRepr<T> {
     fn __flush(&mut self, _: __private::Token) {
         if self.dirty.swap(false, Ordering::AcqRel) {
             let mut subscribers = lock_mutex(&self.subscribers);

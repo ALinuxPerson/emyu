@@ -12,7 +12,13 @@ use thiserror::Error;
 pub struct MvuRuntimeChannelClosedError;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
+
+// NOTE: can't use `+ MaybeSendSync` because it is not an auto trait
+#[cfg(feature = "thread-safe")]
 type UpdateMapper<M> = dyn Fn(UpdateAction<M>) -> UpdateAction<RootModelOf<M>> + Send + Sync;
+
+#[cfg(not(feature = "thread-safe"))]
+type UpdateMapper<M> = dyn Fn(UpdateAction<M>) -> UpdateAction<RootModelOf<M>>;
 
 pub struct Dispatcher<M: Model> {
     tx: mpsc::Sender<UpdateAction<RootModelOf<M>>>,

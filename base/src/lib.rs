@@ -42,11 +42,15 @@ pub mod __private {
 pub mod base;
 pub mod dispatcher;
 pub mod runtime;
+
+#[cfg(feature = "thread-safe")]
 pub mod handle;
 
 pub use base::*;
 pub use dispatcher::*;
 pub use runtime::*;
+
+#[cfg(feature = "thread-safe")]
 pub use handle::*;
 
 #[cfg(feature = "std")]
@@ -66,6 +70,8 @@ mod sync {
     pub type VMutex<T> = spin::Mutex<T>;
     pub type VMutexGuard<'a, T> = spin::MutexGuard<'a, T>;
 }
+
+mod maybe;
 
 use sync::*;
 

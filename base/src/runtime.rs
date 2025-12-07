@@ -1,4 +1,5 @@
 use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
+use crate::maybe::MaybeSendSync;
 use crate::{
     Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelBaseReader,
     ModelHandler, ModelMessage, Updater, VRWLockReadGuard,
@@ -14,7 +15,6 @@ use futures::channel::mpsc;
 use futures::{SinkExt, Stream, StreamExt};
 use hashbrown::HashSet;
 use std::sync::Arc;
-use type_map::concurrent::TypeMap;
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -90,11 +90,11 @@ impl<'rt, A: Application> CommandContext<'rt, A> {
         self.model.getter(message)
     }
 
-    pub fn state<S: Send + Sync + 'static>(&self) -> &S {
+    pub fn state<S: MaybeSendSync + 'static>(&self) -> &S {
         self.world.get()
     }
 
-    pub fn state_mut<S: Send + Sync + 'static>(&mut self) -> &mut S {
+    pub fn state_mut<S: MaybeSendSync + 'static>(&mut self) -> &mut S {
         self.world.get_mut()
     }
 
@@ -123,8 +123,14 @@ impl<A: Application> Stream for ShouldRefreshSubscriber<A> {
     }
 }
 
+// NOTE: can't use `+ MaybeSend` because it is not an auto trait
+#[cfg(feature = "thread-safe")]
 pub(crate) type UpdateAction<M> =
     Box<dyn FnOnce(ModelBase<M>, &mut UpdateContext<<M as Model>::ForApp>) + Send>;
+
+#[cfg(not(feature = "thread-safe"))]
+pub(crate) type UpdateAction<M> =
+    Box<dyn FnOnce(ModelBase<M>, &mut UpdateContext<<M as Model>::ForApp>)>;
 
 pub struct MvuRuntime<A: Application> {
     model: ModelBase<A::RootModel>,
@@ -214,32 +220,35 @@ impl<A: Application> MvuRuntime<A> {
 }
 
 #[derive(Default)]
-pub struct World(TypeMap);
+pub struct World(
+    #[cfg(feature = "thread-safe")] type_map::concurrent::TypeMap,
+    #[cfg(not(feature = "thread-safe"))] type_map::TypeMap,
+);
 
 impl World {
-    pub(crate) fn add_with<S: Send + Sync + 'static>(mut self, state: S) -> Self {
+    pub(crate) fn add_with<S: MaybeSendSync + 'static>(mut self, state: S) -> Self {
         self.0.insert(state);
         self
     }
 
-    pub(crate) fn add<S: Default + Send + Sync + 'static>(self) -> Self {
+    pub(crate) fn add<S: Default + MaybeSendSync + 'static>(self) -> Self {
         self.add_with(S::default())
     }
 
-    pub fn try_get<S: Send + Sync + 'static>(&self) -> Option<&S> {
+    pub fn try_get<S: MaybeSendSync + 'static>(&self) -> Option<&S> {
         self.0.get()
     }
 
-    pub fn get<S: Send + Sync + 'static>(&self) -> &S {
+    pub fn get<S: MaybeSendSync + 'static>(&self) -> &S {
         self.try_get()
             .unwrap_or_else(|| panic!("`{}` does not exist in the world", type_name::<S>()))
     }
 
-    pub fn try_get_mut<S: Send + Sync + 'static>(&mut self) -> Option<&mut S> {
+    pub fn try_get_mut<S: MaybeSendSync + 'static>(&mut self) -> Option<&mut S> {
         self.0.get_mut()
     }
 
-    pub fn get_mut<S: Send + Sync + 'static>(&mut self) -> &mut S {
+    pub fn get_mut<S: MaybeSendSync + 'static>(&mut self) -> &mut S {
         self.try_get_mut()
             .unwrap_or_else(|| panic!("`{}` does not exist in the world", type_name::<S>()))
     }
@@ -271,14 +280,14 @@ impl<A: Application> MvuRuntimeBuilder<A> {
         }
     }
 
-    pub fn state_with<S: Send + Sync + 'static>(self, value: S) -> Self {
+    pub fn state_with<S: MaybeSendSync + 'static>(self, value: S) -> Self {
         Self {
             world: self.world.add_with(value),
             ..self
         }
     }
 
-    pub fn state<S: Default + Send + Sync + 'static>(self) -> Self {
+    pub fn state<S: Default + MaybeSendSync + 'static>(self) -> Self {
         Self {
             world: self.world.add::<S>(),
             ..self
@@ -293,7 +302,7 @@ impl<A: Application> MvuRuntimeBuilder<A> {
     pub fn interceptor<M, Msg>(self, value: impl Interceptor<M, Msg>) -> Self
     where
         M: Model<ForApp = A>,
-        Msg: ModelMessage + Sync,
+        Msg: ModelMessage,
     {
         self.dyn_interceptor(InterceptorWrapper::new(value))
     }
