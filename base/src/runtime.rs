@@ -1,6 +1,5 @@
 use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
-use crate::maybe::MaybeSendSync;
-use crate::{Interceptor, ModelBase, ModelBaseReader, VRWLockReadGuard};
+use crate::{Interceptor, ModelBase, ModelBaseReader};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use core::any::type_name;
@@ -8,6 +7,7 @@ use core::ops::ControlFlow;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use crate::{Getter, Updater};
+use crate::maybe::{MaybeRwLockReadGuard, MaybeSendSync};
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -48,7 +48,7 @@ pub struct CommandContext<'rt, A: Application> {
 }
 
 impl<'rt, A: Application> CommandContext<'rt, A> {
-    pub fn read(&self) -> VRWLockReadGuard<'_, A::RootModel> {
+    pub fn read(&self) -> MaybeRwLockReadGuard<'_, A::RootModel> {
         self.model.read()
     }
 

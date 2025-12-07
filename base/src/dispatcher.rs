@@ -1,8 +1,8 @@
-use crate::maybe::MaybeArc;
 use crate::{Application, Model, ModelBase, ModelGetterHandler, ModelGetterMessage, MvuRuntimeChannelClosedError, __private};
 use futures::SinkExt;
 use futures::channel::mpsc;
 use std::convert::identity;
+use crate::maybe::Shared;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
 type RootMessageOf<M> = <RootModelOf<M> as Model>::Message;
@@ -16,7 +16,7 @@ type Mapper<M> = dyn Fn(<M as Model>::Message) -> RootMessageOf<M>;
 
 pub struct Updater<M: Model> {
     tx: mpsc::Sender<RootMessageOf<M>>,
-    mapper: MaybeArc<Mapper<M>>,
+    mapper: Shared<Mapper<M>>,
 }
 
 impl<R> Updater<R>
@@ -27,7 +27,7 @@ where
     pub(crate) fn new(tx: mpsc::Sender<RootMessageOf<R>>) -> Self {
         Self {
             tx,
-            mapper: MaybeArc::new(identity),
+            mapper: Shared::new(identity),
         }
     }
 }
@@ -53,8 +53,8 @@ impl<M: Model> Updater<M> {
     where
         Child: Model<ForApp = M::ForApp>,
     {
-        let parent_mapper = MaybeArc::clone(&self.mapper);
-        let child_mapper = MaybeArc::new(move |child_message| {
+        let parent_mapper = Shared::clone(&self.mapper);
+        let child_mapper = Shared::new(move |child_message| {
             let parent_message = lens(child_message);
             parent_mapper(parent_message)
         });
@@ -69,7 +69,7 @@ impl<M: Model> Clone for Updater<M> {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
-            mapper: MaybeArc::clone(&self.mapper),
+            mapper: Shared::clone(&self.mapper),
         }
     }
 }

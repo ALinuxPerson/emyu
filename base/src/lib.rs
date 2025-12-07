@@ -42,6 +42,7 @@ pub mod __private {
 pub mod base;
 pub mod dispatcher;
 pub mod runtime;
+mod maybe;
 
 #[cfg(feature = "thread-safe")]
 pub mod handle;
@@ -52,49 +53,6 @@ pub use runtime::*;
 
 #[cfg(feature = "thread-safe")]
 pub use handle::*;
-
-#[cfg(feature = "std")]
-mod sync {
-    pub type VRwLock<T> = std::sync::RwLock<T>;
-    pub type VRWLockReadGuard<'a, T> = std::sync::RwLockReadGuard<'a, T>;
-    pub type VRWLockWriteGuard<'a, T> = std::sync::RwLockWriteGuard<'a, T>;
-    pub type VMutex<T> = std::sync::Mutex<T>;
-    pub type VMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
-}
-
-#[cfg(not(feature = "std"))]
-mod sync {
-    pub type VRwLock<T> = spin::RwLock<T>;
-    pub type VRWLockReadGuard<'a, T> = spin::RwLockReadGuard<'a, T>;
-    pub type VRWLockWriteGuard<'a, T> = spin::RwLockWriteGuard<'a, T>;
-    pub type VMutex<T> = spin::Mutex<T>;
-    pub type VMutexGuard<'a, T> = spin::MutexGuard<'a, T>;
-}
-
-mod maybe;
-
-use sync::*;
-
-macro_rules! cfg_unwrap {
-    ($expr:expr) => {{
-        #[cfg(feature = "std")]
-        { $expr.unwrap() }
-        #[cfg(not(feature = "std"))]
-        { $expr }
-    }};
-}
-
-fn read_vrwlock<T>(lock: &VRwLock<T>) -> VRWLockReadGuard<'_, T> {
-    cfg_unwrap!(lock.read())
-}
-
-fn write_vrwlock<T>(lock: &VRwLock<T>) -> VRWLockWriteGuard<'_, T> {
-    cfg_unwrap!(lock.write())
-}
-
-fn lock_mutex<T>(lock: &VMutex<T>) -> VMutexGuard<'_, T> {
-    cfg_unwrap!(lock.lock())
-}
 
 #[doc(hidden)]
 pub fn __token() -> __private::Token {

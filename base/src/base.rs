@@ -1,11 +1,9 @@
-use crate::maybe::{MaybeSend, MaybeSendStatic, MaybeSendSync};
-use crate::runtime::{CommandContext, UpdateContext};
-use crate::sync::VMutex;
-use crate::{
-    __private, VRWLockReadGuard, VRWLockWriteGuard, VRwLock, lock_mutex, read_vrwlock,
-    write_vrwlock,
+use crate::__private;
+use crate::maybe::{
+    MaybeMutex, MaybeRwLock, MaybeRwLockReadGuard, MaybeRwLockWriteGuard, MaybeSend,
+    MaybeSendStatic, MaybeSendSync, Shared,
 };
-use alloc::sync::Arc;
+use crate::runtime::{CommandContext, UpdateContext};
 use async_trait::async_trait;
 use core::fmt::Debug;
 use core::marker::PhantomData;
@@ -41,7 +39,7 @@ pub trait Model: MaybeSendSync + 'static {
     #[doc(hidden)]
     fn __accumulate_signals(
         &self,
-        signals: &mut VecDeque<Arc<dyn FlushSignals>>,
+        signals: &mut VecDeque<Shared<dyn FlushSignals>>,
         _token: __private::Token,
     );
 }
@@ -88,23 +86,23 @@ pub struct MvuRuntimeChannelClosedError;
 #[error("the channel to the model getter is closed")]
 pub struct ModelGetterChannelClosedError;
 
-pub struct ModelBase<M>(Arc<VRwLock<M>>);
+pub struct ModelBase<M>(Shared<MaybeRwLock<M>>);
 
 impl<M> ModelBase<M> {
     pub fn new(model: M) -> Self {
-        Self(Arc::new(VRwLock::new(model)))
+        Self(Shared::new(MaybeRwLock::new(model)))
     }
 
-    pub fn read(&self) -> VRWLockReadGuard<'_, M> {
-        read_vrwlock(&self.0)
+    pub fn read(&self) -> MaybeRwLockReadGuard<'_, M> {
+        self.0.read()
     }
 
     pub fn reader(&self) -> ModelBaseReader<M> {
         ModelBaseReader(self.clone())
     }
 
-    pub fn write(&self) -> VRWLockWriteGuard<'_, M> {
-        write_vrwlock(&self.0)
+    pub fn write(&self) -> MaybeRwLockWriteGuard<'_, M> {
+        self.0.write()
     }
 }
 
@@ -140,7 +138,7 @@ impl<M: Model> ModelBase<M> {
     #[doc(hidden)]
     pub fn __accumulate_signals(
         &self,
-        signals: &mut VecDeque<Arc<dyn FlushSignals>>,
+        signals: &mut VecDeque<Shared<dyn FlushSignals>>,
         token: __private::Token,
     ) {
         self.read().__accumulate_signals(signals, token);
@@ -149,14 +147,14 @@ impl<M: Model> ModelBase<M> {
 
 impl<M> Clone for ModelBase<M> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self(Shared::clone(&self.0))
     }
 }
 
 pub struct ModelBaseReader<M>(ModelBase<M>);
 
 impl<M> ModelBaseReader<M> {
-    pub fn read(&self) -> VRWLockReadGuard<'_, M> {
+    pub fn read(&self) -> MaybeRwLockReadGuard<'_, M> {
         self.0.read()
     }
 }
@@ -195,7 +193,9 @@ pub trait Interceptor<A: Application>: MaybeSendSync + 'static {
 impl<A, F> Interceptor<A> for F
 where
     A: Application,
-    F: FnMut(ModelBaseReader<A::RootModel>, &<A::RootModel as Model>::Message) + MaybeSendSync + 'static,
+    F: FnMut(ModelBaseReader<A::RootModel>, &<A::RootModel as Model>::Message)
+        + MaybeSendSync
+        + 'static,
 {
     fn intercept(
         &mut self,
@@ -206,22 +206,22 @@ where
     }
 }
 
-pub struct Signal<T>(Arc<SignalRepr<T>>);
+pub struct Signal<T>(Shared<SignalRepr<T>>);
 
 impl<T> Signal<T> {
     pub fn subscribe(&self) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel(1);
-        let mut subscribers = lock_mutex(&self.0.subscribers);
+        let mut subscribers = self.0.subscribers.lock();
         subscribers.push(tx);
         rx
     }
 
-    pub fn read(&self) -> VRWLockReadGuard<'_, T> {
-        read_vrwlock(&self.0.state)
+    pub fn read(&self) -> MaybeRwLockReadGuard<'_, T> {
+        self.0.state.read()
     }
 
-    fn write(&mut self) -> VRWLockWriteGuard<'_, T> {
-        write_vrwlock(&self.0.state)
+    fn write(&mut self) -> MaybeRwLockWriteGuard<'_, T> {
+        self.0.state.write()
     }
 
     pub fn update<R>(&mut self, f: impl FnOnce(&mut T) -> R) -> R {
@@ -235,23 +235,23 @@ impl<T> Signal<T> {
     }
 
     #[doc(hidden)]
-    pub fn __to_dyn_flush_signals(&self, _: __private::Token) -> Arc<dyn FlushSignals>
+    pub fn __to_dyn_flush_signals(&self, _: __private::Token) -> Shared<dyn FlushSignals>
     where
         T: MaybeSendSync + 'static,
     {
-        Arc::clone(&self.0) as _
+        Shared::clone(&self.0) as _
     }
 }
 
 impl<T> Clone for Signal<T> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self(Shared::clone(&self.0))
     }
 }
 
 struct SignalRepr<T> {
-    state: Arc<VRwLock<T>>,
-    subscribers: VMutex<Vec<mpsc::Sender<()>>>,
+    state: Shared<MaybeRwLock<T>>,
+    subscribers: MaybeMutex<Vec<mpsc::Sender<()>>>,
     dirty: AtomicBool,
 }
 
@@ -263,7 +263,7 @@ pub trait FlushSignals: MaybeSend {
 impl<T: MaybeSendSync> FlushSignals for SignalRepr<T> {
     fn __flush(&mut self, _: __private::Token) {
         if self.dirty.swap(false, Ordering::AcqRel) {
-            let mut subscribers = lock_mutex(&self.subscribers);
+            let mut subscribers = self.subscribers.lock();
             for subscriber in &mut *subscribers {
                 subscriber.try_send(()).ok();
             }
