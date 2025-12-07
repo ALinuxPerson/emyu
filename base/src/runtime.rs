@@ -1,16 +1,13 @@
 use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
 use crate::maybe::MaybeSendSync;
-use crate::{
-    Dispatcher, DynInterceptor, Interceptor, InterceptorWrapper, ModelBase, ModelBaseReader,
-    Updater, VRWLockReadGuard,
-};
+use crate::{Interceptor, ModelBase, ModelBaseReader, VRWLockReadGuard};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use core::any::type_name;
 use core::ops::ControlFlow;
-use futures::channel::mpsc;
 use futures::StreamExt;
-use std::sync::Arc;
+use futures::channel::mpsc;
+use crate::{Getter, Updater};
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -60,7 +57,7 @@ impl<'rt, A: Application> CommandContext<'rt, A> {
         Msg: ModelGetterMessage,
         A::RootModel: ModelGetterHandler<Msg>,
     {
-        self.model.getter(message)
+        self.model.get(message)
     }
 
     pub fn state<S: MaybeSendSync + 'static>(&self) -> &S {
@@ -76,23 +73,15 @@ impl<'rt, A: Application> CommandContext<'rt, A> {
     }
 }
 
-// NOTE: can't use `+ MaybeSend` because it is not an auto trait
-#[cfg(feature = "thread-safe")]
-pub(crate) type UpdateAction<M> =
-    Box<dyn FnOnce(ModelBase<M>, &mut UpdateContext<<M as Model>::ForApp>) + Send>;
-
-#[cfg(not(feature = "thread-safe"))]
-pub(crate) type UpdateAction<M> =
-    Box<dyn FnOnce(ModelBase<M>, &mut UpdateContext<<M as Model>::ForApp>)>;
+type RootMessage<A> = <<A as Application>::RootModel as Model>::Message;
 
 pub struct MvuRuntime<A: Application> {
     model: ModelBase<A::RootModel>,
     world: World,
-
+    interceptors: Vec<Box<dyn Interceptor<A>>>,
     queue: CommandQueue<A>,
-
-    dispatcher: Dispatcher<A::RootModel>,
-    update_actions_rx: mpsc::Receiver<UpdateAction<A::RootModel>>,
+    updater: Updater<A::RootModel>,
+    message_rx: mpsc::Receiver<RootMessage<A>>,
 }
 
 impl<A: Application> MvuRuntime<A> {
@@ -124,25 +113,26 @@ impl<A: Application> MvuRuntime<A> {
     }
 
     async fn run_once(&mut self) -> ControlFlow<()> {
-        match self.update_actions_rx.next().await {
-            Some(action) => self.handle_update(action).await,
+        match self.message_rx.next().await {
+            Some(action) => self.handle_message(action).await,
             None => return ControlFlow::Break(()),
         };
 
         ControlFlow::Continue(())
     }
 
-    async fn handle_update(&mut self, action: UpdateAction<A::RootModel>) {
+    async fn handle_message(&mut self, message: RootMessage<A>) {
+        for interceptor in &mut self.interceptors {
+            interceptor.intercept(self.model.reader(), &message);
+        }
         let mut update_ctx = UpdateContext {
             queue: &mut self.queue,
         };
-        action(self.model.clone(), &mut update_ctx);
-
-        let (updater, _) = self.dispatcher.clone().split();
+        self.model.write().update(message, &mut update_ctx);
         let mut command_ctx = CommandContext {
             model: self.model.reader(),
             world: &mut self.world,
-            updater,
+            updater: self.updater.clone(),
         };
         while let Some(mut command) = self.queue.pop() {
             tracing::debug!(?command, "applying command");
@@ -152,8 +142,12 @@ impl<A: Application> MvuRuntime<A> {
 }
 
 impl<A: Application> MvuRuntime<A> {
-    pub fn dispatcher(&self) -> Dispatcher<A::RootModel> {
-        self.dispatcher.clone()
+    pub fn updater(&self) -> Updater<A::RootModel> {
+        self.updater.clone()
+    }
+
+    pub fn getter(&self) -> Getter<A::RootModel> {
+        Getter::new(self.model.clone())
     }
 }
 
@@ -195,7 +189,7 @@ impl World {
 pub struct MvuRuntimeBuilder<A: Application> {
     model: Option<A::RootModel>,
     world: World,
-    interceptors: Vec<Box<dyn DynInterceptor>>,
+    interceptors: Vec<Box<dyn Interceptor<A>>>,
     buffer_size: usize,
 }
 
@@ -232,16 +226,9 @@ impl<A: Application> MvuRuntimeBuilder<A> {
         }
     }
 
-    pub fn dyn_interceptor(mut self, value: impl DynInterceptor) -> Self {
+    pub fn interceptor(mut self, value: impl Interceptor<A>) -> Self {
         self.interceptors.push(Box::new(value));
         self
-    }
-
-    pub fn interceptor<M, Msg>(self, value: impl Interceptor<M>) -> Self
-    where
-        M: Model<ForApp = A>,
-    {
-        self.dyn_interceptor(InterceptorWrapper::new(value))
     }
 
     pub fn buffer_size(self, value: usize) -> Self {
@@ -262,14 +249,15 @@ impl<A: Application> MvuRuntimeBuilder<A> {
         let model = self.model.expect("RootModel was not initialized");
         let model = ModelBase::new(model);
 
-        let (action_tx, action_rx) = mpsc::channel(self.buffer_size);
+        let (message_tx, message_rx) = mpsc::channel(self.buffer_size);
 
         MvuRuntime {
             model: model.clone(),
             world: self.world,
+            interceptors: self.interceptors,
             queue: CommandQueue::default(),
-            dispatcher: Dispatcher::new_root(action_tx, model, Arc::new(self.interceptors)),
-            update_actions_rx: action_rx,
+            updater: Updater::new(message_tx),
+            message_rx,
         }
     }
 }

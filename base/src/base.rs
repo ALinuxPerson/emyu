@@ -1,7 +1,4 @@
-use crate::dispatcher::MvuRuntimeChannelClosedError;
-use crate::maybe::{
-    MaybeSend, MaybeSendStatic, MaybeSendSync, MaybeStatic,
-};
+use crate::maybe::{MaybeSend, MaybeSendStatic, MaybeSendSync};
 use crate::runtime::{CommandContext, UpdateContext};
 use crate::sync::VMutex;
 use crate::{
@@ -10,7 +7,6 @@ use crate::{
 };
 use alloc::sync::Arc;
 use async_trait::async_trait;
-use core::any::Any;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use futures::channel::mpsc;
@@ -18,7 +14,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
-pub trait Application: MaybeStatic {
+// must be `'static` for interceptors
+pub trait Application: 'static {
     type RootModel: Model<ForApp = Self>;
 }
 
@@ -82,6 +79,11 @@ impl From<ModelGetterChannelClosedError> for Error {
 }
 
 #[derive(Error, Debug)]
+#[error("the channel to the mvu runtime is closed")]
+#[non_exhaustive]
+pub struct MvuRuntimeChannelClosedError;
+
+#[derive(Error, Debug)]
 #[non_exhaustive]
 #[error("the channel to the model getter is closed")]
 pub struct ModelGetterChannelClosedError;
@@ -116,12 +118,11 @@ macro_rules! lens {
 }
 
 impl<M: Model> ModelBase<M> {
-    pub fn update(&self, message: M::Message, ctx: &mut UpdateContext<M::ForApp>)
-    {
+    pub fn update(&self, message: M::Message, ctx: &mut UpdateContext<M::ForApp>) {
         self.write().update(message, ctx)
     }
 
-    pub fn getter<Msg>(&self, message: Msg) -> Msg::Data
+    pub fn get<Msg>(&self, message: Msg) -> Msg::Data
     where
         Msg: ModelGetterMessage,
         M: ModelGetterHandler<Msg>,
@@ -161,12 +162,12 @@ impl<M> ModelBaseReader<M> {
 }
 
 impl<M: Model> ModelBaseReader<M> {
-    pub fn getter<Msg>(&self, message: Msg) -> Msg::Data
+    pub fn get<Msg>(&self, message: Msg) -> Msg::Data
     where
         Msg: ModelGetterMessage,
         M: ModelGetterHandler<Msg>,
     {
-        self.0.getter(message)
+        self.0.get(message)
     }
 
     pub fn zoom<Child>(&self, lens: fn(&M) -> &ModelBase<Child>) -> ModelBaseReader<Child>
@@ -183,63 +184,25 @@ impl<M> Clone for ModelBaseReader<M> {
     }
 }
 
-pub trait DynInterceptor: MaybeSendSync + 'static {
-    fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any);
+pub trait Interceptor<A: Application>: MaybeSendSync + 'static {
+    fn intercept(
+        &mut self,
+        model: ModelBaseReader<A::RootModel>,
+        message: &<A::RootModel as Model>::Message,
+    );
 }
 
-impl<F> DynInterceptor for F
+impl<A, F> Interceptor<A> for F
 where
-    F: Fn(&dyn Any, &dyn Any) + MaybeSendSync + 'static,
+    A: Application,
+    F: FnMut(ModelBaseReader<A::RootModel>, &<A::RootModel as Model>::Message) + MaybeSendSync + 'static,
 {
-    fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
+    fn intercept(
+        &mut self,
+        model: ModelBaseReader<A::RootModel>,
+        message: &<A::RootModel as Model>::Message,
+    ) {
         self(model, message)
-    }
-}
-
-pub trait Interceptor<M>: MaybeSendSync + 'static
-where
-    M: Model,
-{
-    fn intercept(&self, model: ModelBaseReader<M>, message: &M::Message);
-}
-
-impl<M, F> Interceptor<M> for F
-where
-    M: Model,
-    F: Fn(ModelBaseReader<M>, &M::Message) + MaybeSendSync + 'static,
-{
-    fn intercept(&self, model: ModelBaseReader<M>, message: &M::Message) {
-        self(model, message)
-    }
-}
-
-pub struct InterceptorWrapper<M, I> {
-    interceptor: I,
-    _model: PhantomData<M>,
-}
-
-impl<M, I> InterceptorWrapper<M, I> {
-    pub fn new(interceptor: I) -> Self {
-        Self {
-            interceptor,
-            _model: PhantomData,
-        }
-    }
-}
-
-impl<M, I> DynInterceptor for InterceptorWrapper<M, I>
-where
-    M: Model,
-    I: Interceptor<M>,
-{
-    fn intercept_dyn(&self, model: &dyn Any, message: &dyn Any) {
-        if let (Some(model), Some(message)) = (
-            model.downcast_ref::<ModelBase<M>>(),
-            message.downcast_ref::<M::Message>(),
-        ) {
-            let model_reader = ModelBaseReader(model.clone());
-            self.interceptor.intercept(model_reader, message);
-        }
     }
 }
 

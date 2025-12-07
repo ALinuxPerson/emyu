@@ -1,49 +1,44 @@
-use crate::runtime::UpdateAction;
-use crate::{
-    __private, Application, DynInterceptor, Model, ModelBase, ModelGetterHandler,
-    ModelGetterMessage, UpdateContext,
-};
-use alloc::boxed::Box;
-use alloc::sync::Arc;
+use crate::maybe::MaybeArc;
+use crate::{Application, Model, ModelBase, ModelGetterHandler, ModelGetterMessage, MvuRuntimeChannelClosedError, __private};
 use futures::SinkExt;
 use futures::channel::mpsc;
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-#[error("the channel to the mvu runtime is closed")]
-#[non_exhaustive]
-pub struct MvuRuntimeChannelClosedError;
+use std::convert::identity;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
+type RootMessageOf<M> = <RootModelOf<M> as Model>::Message;
 
 // NOTE: can't use `+ MaybeSendSync` because it is not an auto trait
 #[cfg(feature = "thread-safe")]
-type UpdateMapper<M> = dyn Fn(UpdateAction<M>) -> UpdateAction<RootModelOf<M>> + Send + Sync;
+type Mapper<M> = dyn Fn(<M as Model>::Message) -> RootMessageOf<M> + Send + Sync;
 
 #[cfg(not(feature = "thread-safe"))]
-type UpdateMapper<M> = dyn Fn(UpdateAction<M>) -> UpdateAction<RootModelOf<M>>;
+type Mapper<M> = dyn Fn(<M as Model>::Message) -> RootMessageOf<M>;
 
-pub struct Dispatcher<M: Model> {
-    tx: mpsc::Sender<UpdateAction<RootModelOf<M>>>,
-    model: ModelBase<M>,
-    interceptors: Arc<Vec<Box<dyn DynInterceptor>>>,
-    mapper: Arc<UpdateMapper<M>>,
+pub struct Updater<M: Model> {
+    tx: mpsc::Sender<RootMessageOf<M>>,
+    mapper: MaybeArc<Mapper<M>>,
 }
 
-impl<M: Model> Dispatcher<M> {
-    pub async fn try_send(&mut self, message: M::Message) -> Result<(), MvuRuntimeChannelClosedError> {
-        for interceptor in self.interceptors.iter() {
-            interceptor.intercept_dyn(&self.model.reader(), &message);
+impl<R> Updater<R>
+where
+    R: Model,
+    <R as Model>::ForApp: Application<RootModel = R>,
+{
+    pub(crate) fn new(tx: mpsc::Sender<RootMessageOf<R>>) -> Self {
+        Self {
+            tx,
+            mapper: MaybeArc::new(identity),
         }
+    }
+}
 
-        let action = Box::new(
-            move |model: ModelBase<M>, ctx: &mut UpdateContext<M::ForApp>| {
-                model.update(message, ctx)
-            },
-        );
-        let root_action = (self.mapper)(action);
+impl<M: Model> Updater<M> {
+    pub async fn try_send(
+        &mut self,
+        message: M::Message,
+    ) -> Result<(), MvuRuntimeChannelClosedError> {
         self.tx
-            .send(root_action)
+            .send((self.mapper)(message))
             .await
             .map_err(|_| MvuRuntimeChannelClosedError)
     }
@@ -54,147 +49,85 @@ impl<M: Model> Dispatcher<M> {
             .expect("the channel to the mvu runtime is closed")
     }
 
-    pub fn get<Msg>(&self, message: Msg) -> Msg::Data
-    where
-        Msg: ModelGetterMessage,
-        M: ModelGetterHandler<Msg>,
-    {
-        self.model.getter(message)
-    }
-
-    pub fn split(self) -> (Updater<M>, Getter<M>) {
-        (Updater(self.clone()), Getter(self))
-    }
-}
-
-impl<M: Model> Dispatcher<M> {
-    pub fn zoom<Child>(self, lens: fn(&M) -> &ModelBase<Child>) -> Dispatcher<Child>
+    pub fn zoom<Child>(self, lens: fn(<Child as Model>::Message) -> M::Message) -> Updater<Child>
     where
         Child: Model<ForApp = M::ForApp>,
     {
-        let update_mapper = Arc::new(move |child_action: UpdateAction<Child>| {
-            let parent_action: UpdateAction<M> =
-                Box::new(move |parent, ctx| child_action(parent.zoom(lens), ctx));
-            (self.mapper)(parent_action)
+        let parent_mapper = MaybeArc::clone(&self.mapper);
+        let child_mapper = MaybeArc::new(move |child_message| {
+            let parent_message = lens(child_message);
+            parent_mapper(parent_message)
         });
-
-        Dispatcher {
-            tx: self.tx,
-            model: self.model.zoom(lens),
-            interceptors: Arc::clone(&self.interceptors),
-            mapper: update_mapper,
-        }
-    }
-}
-
-impl<M: Model> Clone for Dispatcher<M> {
-    fn clone(&self) -> Self {
-        Self {
+        Updater {
             tx: self.tx.clone(),
-            model: self.model.clone(),
-            interceptors: Arc::clone(&self.interceptors),
-            mapper: Arc::clone(&self.mapper),
+            mapper: child_mapper,
         }
-    }
-}
-
-impl<R> Dispatcher<R>
-where
-    R: Model,
-    <R as Model>::ForApp: Application<RootModel = R>,
-{
-    pub(crate) fn new_root(
-        tx: mpsc::Sender<UpdateAction<R>>,
-        model: ModelBase<R>,
-        interceptors: Arc<Vec<Box<dyn DynInterceptor>>>,
-    ) -> Self {
-        Self {
-            tx,
-            model,
-            interceptors,
-            mapper: Arc::new(|action| action),
-        }
-    }
-}
-
-pub struct Updater<M: Model>(Dispatcher<M>);
-
-impl<M: Model> Updater<M> {
-    pub async fn try_send(&mut self, message: M::Message) -> Result<(), MvuRuntimeChannelClosedError>
-    {
-        self.0.try_send(message).await
-    }
-
-    pub async fn send(&mut self, message: M::Message) {
-        self.0.send(message).await
-    }
-
-    pub fn zoom<Child>(self, lens: fn(&M) -> &ModelBase<Child>) -> Updater<Child>
-    where
-        Child: Model<ForApp = M::ForApp>,
-    {
-        Updater(self.0.zoom(lens))
     }
 }
 
 impl<M: Model> Clone for Updater<M> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            tx: self.tx.clone(),
+            mapper: MaybeArc::clone(&self.mapper),
+        }
     }
 }
 
-pub struct Getter<M: Model>(Dispatcher<M>);
+pub trait WrappedUpdater: Clone + __private::Sealed {
+    type Model: Model;
 
-impl<M: Model> Getter<M> {
-    pub fn get<Msg>(&self, message: Msg) -> Msg::Data
+    #[doc(hidden)]
+    fn __new(updater: Updater<Self::Model>, _token: __private::Token) -> Self;
+}
+
+pub struct Getter<M> {
+    model: ModelBase<M>,
+}
+
+impl<M> Getter<M> {
+    pub(crate) fn new(model: ModelBase<M>) -> Self {
+        Self { model }
+    }
+
+    pub fn get_with<Msg>(&self, message: Msg) -> Msg::Data
     where
         Msg: ModelGetterMessage,
         M: ModelGetterHandler<Msg>,
     {
-        self.0.get(message)
+        self.model.get(message)
+    }
+
+    pub fn get<Msg>(&self) -> Msg::Data
+    where
+        Msg: ModelGetterMessage + Default,
+        M: ModelGetterHandler<Msg>,
+    {
+        self.get_with(Msg::default())
     }
 
     pub fn zoom<Child>(self, lens: fn(&M) -> &ModelBase<Child>) -> Getter<Child>
     where
+        M: Model,
         Child: Model<ForApp = M::ForApp>,
     {
-        Getter(self.0.zoom(lens))
+        Getter {
+            model: self.model.zoom(lens),
+        }
     }
 }
 
-impl<M: Model> Clone for Getter<M> {
+impl<M> Clone for Getter<M> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self {
+            model: self.model.clone(),
+        }
     }
 }
 
-pub trait WrappedDispatcher: Clone + __private::Sealed {
+pub trait WrappedGetter: Clone + __private::Sealed {
     type Model: Model;
-    type Updater: WrappedUpdater<WrappedDispatcher = Self>;
-    type Getter: WrappedGetter<WrappedDispatcher = Self>;
 
     #[doc(hidden)]
-    fn __new(dispatcher: Dispatcher<Self::Model>, _token: __private::Token) -> Self;
-
-    #[doc(hidden)]
-    fn __split(self, _token: __private::Token) -> (Self::Updater, Self::Getter) {
-        (
-            Self::Updater::__new(self.clone(), __private::Token::new()),
-            Self::Getter::__new(self, __private::Token::new()),
-        )
-    }
-}
-
-pub trait WrappedUpdater: __private::Sealed {
-    type WrappedDispatcher: WrappedDispatcher<Updater = Self>;
-
-    #[doc(hidden)]
-    fn __new(dispatcher: Self::WrappedDispatcher, _token: __private::Token) -> Self;
-}
-
-pub trait WrappedGetter: __private::Sealed {
-    type WrappedDispatcher: WrappedDispatcher<Getter = Self>;
-
-    #[doc(hidden)]
-    fn __new(dispatcher: Self::WrappedDispatcher, _token: __private::Token) -> Self;
+    fn __new(getter: Getter<Self::Model>, _token: __private::Token) -> Self;
 }

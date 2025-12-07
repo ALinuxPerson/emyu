@@ -8,6 +8,8 @@ mod primitives {
 
     pub trait MaybeStatic {}
     impl<T> MaybeStatic for T {}
+    
+    pub type MaybeArc<T> = alloc::rc::Rc<T>;
 }
 
 #[cfg(feature = "thread-safe")]
@@ -20,6 +22,8 @@ mod primitives {
 
     pub trait MaybeStatic: 'static {}
     impl<T: 'static> MaybeStatic for T {}
+    
+    pub type MaybeArc<T> = alloc::sync::Arc<T>;
 }
 
 pub(crate) use primitives::*;

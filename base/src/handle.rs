@@ -33,26 +33,31 @@ pub use spawner::FrbSpawner;
 #[cfg(feature = "tokio")]
 pub use spawner::TokioSpawner;
 
-use crate::{Application, MvuRuntime, MvuRuntimeBuilder, WrappedDispatcher};
+use crate::{WrappedGetter, WrappedUpdater};
+use crate::{Application, MvuRuntime, MvuRuntimeBuilder};
 
-pub struct AppHandle<A: Application, WD> {
-    dispatcher: WD,
+pub struct AppHandle<A: Application, WU, WG> {
+    updater: WU,
+    getter: WG,
     _app: PhantomData<A>,
 }
 
-impl<A, WD> AppHandle<A, WD>
+impl<A, WU, WG> AppHandle<A, WU, WG>
 where
     A: Application,
-    WD: WrappedDispatcher<Model = A::RootModel>,
+    WU: WrappedUpdater<Model = A::RootModel>,
+    WG: WrappedGetter<Model = A::RootModel>,
 {
     pub fn new<S: GlobalSpawner>(
         builder_fn: impl FnOnce(MvuRuntimeBuilder<A>) -> MvuRuntime<A>,
     ) -> Self {
         let runtime = builder_fn(MvuRuntimeBuilder::new());
-        let dispatcher = runtime.dispatcher();
+        let updater = runtime.updater();
+        let getter = runtime.getter();
         S::spawn_detached(runtime.run());
         Self {
-            dispatcher: WD::__new(dispatcher, crate::__private::Token::new()),
+            updater: WU::__new(updater, crate::__token()),
+            getter: WG::__new(getter, crate::__token()),
             _app: PhantomData,
         }
     }
@@ -70,31 +75,17 @@ where
     }
 }
 
-impl<A, WD> AppHandle<A, WD>
+impl<A, WU, WG> AppHandle<A, WU, WG>
 where
     A: Application,
-    WD: WrappedDispatcher<Model = A::RootModel>,
+    WU: WrappedUpdater<Model = A::RootModel>,
+    WG: WrappedGetter<Model = A::RootModel>,
 {
-    pub fn dispatcher(&self) -> WD
-    where
-        WD: Clone,
-    {
-        self.dispatcher.clone()
-    }
-}
-
-impl<A, WD> AppHandle<A, WD>
-where
-    A: Application,
-    WD: WrappedDispatcher<Model = A::RootModel>,
-{
-    pub fn updater(&self) -> WD::Updater {
-        let (updater, _) = self.dispatcher.clone().__split(crate::__token());
-        updater
+    pub fn updater(&self) -> WU {
+        self.updater.clone()
     }
 
-    pub fn getter(&self) -> WD::Getter {
-        let (_, getter) = self.dispatcher.clone().__split(crate::__token());
-        getter
+    pub fn getter(&self) -> WG {
+        self.getter.clone()
     }
 }
