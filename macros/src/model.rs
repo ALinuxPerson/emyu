@@ -1,4 +1,4 @@
-//! `#[vye::model]` macro implementation.
+//! `#[emyu::model]` macro implementation.
 mod attr;
 mod parser;
 mod generator;

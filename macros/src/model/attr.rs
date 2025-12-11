@@ -76,8 +76,8 @@ impl ModelArgs {
         if let Some(raw::MetaConfig { message, fns, .. }) = &def.meta {
             validate! {
                 span, |v: &Vec<Meta>| v.is_empty();
-                message => "#[vye::dispatcher(meta(message(...)))]",
-                fns => "#[vye::dispatcher(meta(fns(...)))]",
+                message => "#[emyu::dispatcher(meta(message(...)))]",
+                fns => "#[emyu::dispatcher(meta(fns(...)))]",
             }
         }
 
@@ -203,7 +203,7 @@ pub struct NewMethodArgs {
 impl NewMethodArgs {
     fn validate(raw: &raw::MethodArgs, span: Span) -> syn::Result<()> {
         if raw.name.is_some() {
-            return Err(invalid_position_error(span, "#[vye(name(...))]"));
+            return Err(invalid_position_error(span, "#[emyu(name(...))]"));
         };
 
         Ok(())
@@ -274,15 +274,15 @@ impl UpdaterGetterMethodArgs {
         if let Some(config) = &raw.name {
             validate! {
                 span, |v: &Option<Ident>| v.is_none();
-                &config.updater => "#[vye(name(updater = \"...\"))]",
-                &config.getter => "#[vye(name(getter = \"...\"))]",
+                &config.updater => "#[emyu(name(updater = \"...\"))]",
+                &config.getter => "#[emyu(name(getter = \"...\"))]",
             }
         }
 
         if let Some(raw::MetaConfig { inner, .. }) = &raw.meta
             && inner.is_some()
         {
-            return Err(invalid_position_error(span, "#[vye(meta(inner(...)))]"));
+            return Err(invalid_position_error(span, "#[emyu(meta(inner(...)))]"));
         }
 
         Ok(())
@@ -294,7 +294,7 @@ impl UpdaterGetterMethodArgs {
         if let Some(raw::MetaConfig { getter, .. }) = &raw.meta
             && !getter.is_empty()
         {
-            return Err(invalid_position_error(span, "#[vye(meta(getter(...)))]"));
+            return Err(invalid_position_error(span, "#[emyu(meta(getter(...)))]"));
         }
 
         Ok(())
@@ -306,7 +306,7 @@ impl UpdaterGetterMethodArgs {
         if let Some(raw::MetaConfig { updater, .. }) = &raw.meta
             && !updater.is_empty()
         {
-            return Err(invalid_position_error(span, "#[vye(meta(updater(...)))]"));
+            return Err(invalid_position_error(span, "#[emyu(meta(updater(...)))]"));
         }
 
         Ok(())

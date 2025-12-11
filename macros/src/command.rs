@@ -32,7 +32,7 @@ enum FieldKind {
 }
 
 #[derive(FromAttributes)]
-#[darling(attributes(vye))]
+#[darling(attributes(emyu))]
 struct FieldArgs {
     /// Visibility of the generated field. Defaults to inherited.
     #[darling(default)]
@@ -237,7 +237,7 @@ impl<'a> ParsedField<'a> {
             ));
         };
         let ctx = is_apply_context(ty).map(|for_app_ty| (name, for_app_ty));
-        let (attrs, args) = utils::extract_vye_attrs(attrs)?;
+        let (attrs, args) = utils::extract_emyu_attrs(attrs)?;
         Ok((
             Self {
                 args,

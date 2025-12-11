@@ -1,0 +1,15 @@
+[package]
+name = "emyu"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["std"]
+frb-compat = ["emyu-base/frb-compat", "emyu-macros/frb-compat"]
+tokio = ["emyu-base/tokio"]
+macros = ["dep:emyu-macros"]
+std = ["emyu-base/std"]
+
+[dependencies]
+emyu-base = { version = "0.1.0", path = "../base" }
+emyu-macros = { version = "0.1.0", path = "../macros", optional = true }

@@ -1,5 +1,5 @@
 [package]
-name = "vye-macros"
+name = "emyu-macros"
 version = "0.1.0"
 edition = "2024"
 

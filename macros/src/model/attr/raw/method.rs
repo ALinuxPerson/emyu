@@ -3,7 +3,7 @@ use proc_macro2::Ident;
 use crate::model::attr::raw::{MetaConfig, NameConfig};
 
 #[derive(FromAttributes)]
-#[darling(attributes(vye))]
+#[darling(attributes(emyu))]
 pub struct MethodArgs {
     #[darling(default)]
     pub name: Option<NameConfig>,
