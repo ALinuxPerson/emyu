@@ -70,7 +70,7 @@ impl<'a> ModelContext<'a> {
         let Type::Path(ty_path) = &item.self_ty else {
             return Err(syn::Error::new_spanned(
                 &item.self_ty,
-                "`#[vye::model]` can only be applied to impl blocks for named types",
+                "`#[emyu::model]` can only be applied to impl blocks for named types",
             ));
         };
         let model_name = &ty_path
@@ -80,7 +80,7 @@ impl<'a> ModelContext<'a> {
             .ok_or_else(|| {
                 syn::Error::new_spanned(
                     &item.self_ty,
-                    "`#[vye::model]` can only be applied to impl blocks for named types",
+                    "`#[emyu::model]` can only be applied to impl blocks for named types",
                 )
             })?
             .ident;
@@ -143,28 +143,28 @@ impl<'a> FnKind<'a> {
         if sig.constness.is_some() {
             return Err(syn::Error::new_spanned(
                 sig,
-                "const functions are not supported in `#[vye::model]`",
+                "const functions are not supported in `#[emyu::model]`",
             ));
         }
 
         if sig.asyncness.is_some() {
             return Err(syn::Error::new_spanned(
                 sig,
-                "async functions are not supported in `#[vye::model]`",
+                "async functions are not supported in `#[emyu::model]`",
             ));
         }
 
         if sig.unsafety.is_some() {
             return Err(syn::Error::new_spanned(
                 sig,
-                "unsafe functions are not supported in `#[vye::model]`",
+                "unsafe functions are not supported in `#[emyu::model]`",
             ));
         }
 
         if sig.abi.is_some() {
             return Err(syn::Error::new_spanned(
                 sig,
-                "extern functions are not supported in `#[vye::model]`",
+                "extern functions are not supported in `#[emyu::model]`",
             ));
         }
 
@@ -172,7 +172,7 @@ impl<'a> FnKind<'a> {
             if let GenericParam::Lifetime(_) = param {
                 return Err(syn::Error::new_spanned(
                     param,
-                    "lifetime parameters are not supported in `#[vye::model]`",
+                    "lifetime parameters are not supported in `#[emyu::model]`",
                 ));
             }
         }
@@ -180,7 +180,7 @@ impl<'a> FnKind<'a> {
         if sig.variadic.is_some() {
             return Err(syn::Error::new_spanned(
                 sig,
-                "variadic functions are not supported in `#[vye::model]`",
+                "variadic functions are not supported in `#[emyu::model]`",
             ));
         }
 
@@ -325,7 +325,7 @@ impl<'a> ParsedFnArg<'a> {
                 } else {
                     Err(syn::Error::new_spanned(
                         item,
-                        "unsupported function argument in `#[vye::model]`",
+                        "unsupported function argument in `#[emyu::model]`",
                     ))
                 }
             }

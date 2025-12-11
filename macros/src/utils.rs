@@ -72,14 +72,14 @@ impl Parse for InterfaceImpl {
 }
 
 /// Parses attributes into type T, returning the parsed value and the remaining attributes
-/// (excluding the ones consumed by T, marked by "vye").
-pub fn extract_vye_attrs<T: FromAttributes>(
+/// (excluding the ones consumed by T, marked by "emyu").
+pub fn extract_emyu_attrs<T: FromAttributes>(
     attributes: &[Attribute],
 ) -> syn::Result<(Vec<&Attribute>, T)> {
     let value = T::from_attributes(attributes)?;
     let remaining_attributes = attributes
         .iter()
-        .filter(|attr| !attr.path().is_ident("vye"))
+        .filter(|attr| !attr.path().is_ident("emyu"))
         .collect();
     Ok((remaining_attributes, value))
 }
@@ -89,7 +89,7 @@ pub struct ThisCrate(TokenStream);
 
 impl Default for ThisCrate {
     fn default() -> Self {
-        match crate_name("vye").expect("`vye` crate should be present in `Cargo.toml`") {
+        match crate_name("emyu").expect("`emyu` crate should be present in `Cargo.toml`") {
             FoundCrate::Itself => Self(quote! { crate }),
             FoundCrate::Name(name) => {
                 let ident = Ident::new(&name, Span::call_site());

@@ -5,7 +5,7 @@ use proc_macro2::{Ident, Span};
 use syn::Meta;
 
 /// ```rust
-/// #[vye::model(
+/// #[emyu::model(
 ///     // Specify the application this model is for. Required.
 ///     for_app = "MyCoolApp",
 ///
@@ -28,7 +28,7 @@ use syn::Meta;
 ///     /*
 ///     If passed, generates a wrapped updater and getter struct. Required.
 ///
-///     `#[vye::model]` must be applied to an `impl` block: `pub impl Model { /* ... */ }`
+///     `#[emyu::model]` must be applied to an `impl` block: `pub impl Model { /* ... */ }`
 ///
 ///     The visibility of the `impl` block can be declared. This affects the visibility of the
 ///     generated updater and getter structs.
@@ -50,7 +50,7 @@ use syn::Meta;
 ///         // Attributes config
 ///         meta(
 ///             // These attributes operate on the outer struct:
-///             // `#[derive(Debug)] pub struct FooUpdater(vye::Updater<FooModel>);`
+///             // `#[derive(Debug)] pub struct FooUpdater(emyu::Updater<FooModel>);`
 ///
 ///             // Common attributes for all generated structs
 ///             base(derive(Debug)),
@@ -60,7 +60,7 @@ use syn::Meta;
 ///             getter(derive(Serialize)),     // attributes for the generated `getter` struct
 ///
 ///             // These attributes operate on the inner value:
-///             // `pub struct FooUpdater(#[foo] vye::Updater<FooModel>);`
+///             // `pub struct FooUpdater(#[foo] emyu::Updater<FooModel>);`
 ///             inner(
 ///                 // `updater` and `getter` can be specified multiple times
 ///                 updater(baz),    // inner attributes for the generated `updater` struct
@@ -76,9 +76,9 @@ use syn::Meta;
 /// pub(crate) impl FooModel {
 ///     // The visibility of this function determines the visibility of the generated `new`
 ///     // functions for the getter and updater structs.
-///     #[vye(
+///     #[emyu(
 ///         // Attributes config:
-///         // `#[some_meta] fn new(updater: vye::Updater<FooModel>) -> { /* ... */ }`
+///         // `#[some_meta] fn new(updater: emyu::Updater<FooModel>) -> { /* ... */ }`
 ///         meta(
 ///             // Common attributes of the `new` function for all generated structs
 ///             base(foo),
@@ -107,7 +107,7 @@ use syn::Meta;
 ///     // The visibility of the function determines its visibility on the updater struct.
 ///     //
 ///     // Function names for the updater struct will inherit the name of this function.
-///     #[vye(
+///     #[emyu(
 ///         // Name config. If not passed, the message name will be the function name converted
 ///         // to PascalCase. For example, `set_name` becomes `SetName`.
 ///         message = "SetName",
@@ -145,7 +145,7 @@ use syn::Meta;
 ///     // and its visibility on the getter struct.
 ///     //
 ///     // Function name for the getter struct will inherit the name of this function.
-///     #[vye(
+///     #[emyu(
 ///         // Name config. If not passed, the message name will be the function name converted
 ///         // to PascalCase with "Get" and "Message" as its prefix and suffix respectively.
 ///         // For example, `location` becomes `GetLocationMessage`.
@@ -208,12 +208,12 @@ impl MessageDef {
 }
 
 impl FromMeta for MessageDef {
-    // #[vye::model(message(...))]
+    // #[emyu::model(message(...))]
     fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
         Ok(Self::Config(Box::new(MessageConfig::from_list(items)?)))
     }
 
-    // #[vye::model(message = "MyMessage")]
+    // #[emyu::model(message = "MyMessage")]
     fn from_string(value: &str) -> darling::Result<Self> {
         Ok(Self::Named(Ident::new(value, Span::call_site())))
     }
@@ -243,12 +243,12 @@ impl DispatcherDef {
 }
 
 impl FromMeta for DispatcherDef {
-    // #[vye::model(dispatcher)]
+    // #[emyu::model(dispatcher)]
     fn from_word() -> darling::Result<Self> {
         Ok(Self::Default)
     }
 
-    // #[vye::model(dispatcher(...))]
+    // #[emyu::model(dispatcher(...))]
     fn from_list(items: &[NestedMeta]) -> darling::Result<Self> {
         Ok(Self::Config(Box::new(DispatcherConfig::from_list(items)?)))
     }
