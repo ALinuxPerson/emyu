@@ -22,7 +22,7 @@ mod impls {
     pub type Shared<T> = alloc::rc::Rc<T>;
 }
 
-pub use impls::{MaybeSend, MaybeSync, MaybeStatic, Shared};
+pub use impls::{MaybeSend, MaybeStatic, MaybeSync, Shared};
 
 #[cfg(feature = "thread-safe")]
 mod sync {

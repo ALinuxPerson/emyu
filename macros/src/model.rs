@@ -1,7 +1,7 @@
 //! `#[emyu::model]` macro implementation.
 mod attr;
-mod parser;
 mod generator;
+mod parser;
 
 use crate::model::attr::{NewMethodArgs, UpdaterGetterMethodArgs};
 use crate::utils::{InterfaceImpl, ThisCrate};
@@ -74,7 +74,6 @@ struct ParsedGetterFn<'a> {
     common: ParsedUpdaterGetterFn<'a>,
     ret_ty: &'a Type,
 }
-
 
 pub fn build(item: InterfaceImpl, attrs: RawModelArgs) -> syn::Result<TokenStream> {
     Ok(ModelContext::parse(&item, attrs)?.generate())

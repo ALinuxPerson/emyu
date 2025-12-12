@@ -95,8 +95,12 @@ impl ModelArgs {
             .dispatcher
             .ok_or_else(|| syn::Error::new(span, "`dispatcher` is required"))?
             .into_config();
-        let message =
-            MessageEnumProperties::from_config(raw.message, model_name, crate_, flutter_rust_bridge);
+        let message = MessageEnumProperties::from_config(
+            raw.message,
+            model_name,
+            crate_,
+            flutter_rust_bridge,
+        );
         Self::validate(&config, span)?;
         Ok(Self::from_config(
             config,
@@ -189,7 +193,8 @@ impl MessageEnumProperties {
                     .map(ProcessedMetaRef::into_owned),
                 || utils::frb_opaque(crate_),
                 flutter_rust_bridge,
-            ).collect(),
+            )
+            .collect(),
         }
     }
 }

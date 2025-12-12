@@ -1,6 +1,6 @@
+use crate::model::attr::raw::{MetaConfig, NameConfig};
 use darling::FromAttributes;
 use proc_macro2::Ident;
-use crate::model::attr::raw::{MetaConfig, NameConfig};
 
 #[derive(FromAttributes)]
 #[darling(attributes(emyu))]

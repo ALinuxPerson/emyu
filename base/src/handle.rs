@@ -33,8 +33,8 @@ pub use spawner::FrbSpawner;
 #[cfg(feature = "tokio")]
 pub use spawner::TokioSpawner;
 
-use crate::{WrappedGetter, WrappedUpdater};
 use crate::{Application, MvuRuntime, MvuRuntimeBuilder};
+use crate::{WrappedGetter, WrappedUpdater};
 
 pub struct AppHandle<A: Application, WU, WG> {
     updater: WU,

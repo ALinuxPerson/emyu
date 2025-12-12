@@ -1,4 +1,5 @@
 use crate::utils;
+use crate::utils::ThisCrate;
 use convert_case::ccase;
 use darling::{FromAttributes, FromMeta};
 use proc_macro2::{Ident, TokenStream};
@@ -7,7 +8,6 @@ use syn::{
     AngleBracketedGenericArguments, Attribute, Block, FnArg, GenericArgument, Generics, ItemFn,
     Pat, PatIdent, PatType, PathArguments, Signature, Type, TypeReference, Visibility,
 };
-use crate::utils::ThisCrate;
 
 /// All attrs shall be interpreted as the attrs for the generated Command struct. The visibility
 /// of the function shall determine the visibility of the generated Command struct. Must not

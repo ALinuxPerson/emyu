@@ -1,8 +1,11 @@
-use crate::{Application, Model, ModelBase, ModelGetterHandler, ModelGetterMessage, MvuRuntimeChannelClosedError, Signal, __private};
+use crate::maybe::Shared;
+use crate::{
+    __private, Application, Model, ModelBase, ModelGetterHandler, ModelGetterMessage,
+    MvuRuntimeChannelClosedError, Signal,
+};
 use futures::SinkExt;
 use futures::channel::mpsc;
 use std::convert::identity;
-use crate::maybe::Shared;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
 type RootMessageOf<M> = <RootModelOf<M> as Model>::Message;

@@ -1,12 +1,12 @@
+use crate::utils;
 use darling::FromAttributes;
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
-use proc_macro_crate::{crate_name, FoundCrate};
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::{
     Attribute, Block, Signature, Token, Type, Visibility, braced,
     parse::{Parse, ParseStream},
 };
-use crate::utils;
 
 pub struct MaybeStubFn {
     pub attrs: Vec<Attribute>,
@@ -67,7 +67,11 @@ impl Parse for InterfaceImpl {
             items.push(content.parse()?);
         }
 
-        Ok(InterfaceImpl { vis, self_ty, items })
+        Ok(InterfaceImpl {
+            vis,
+            self_ty,
+            items,
+        })
     }
 }
 
@@ -116,5 +120,3 @@ pub fn frb_sync(crate_: &ThisCrate) -> TokenStream {
 pub fn frb_opaque(crate_: &ThisCrate) -> TokenStream {
     utils::frb(quote! { opaque }, crate_)
 }
-
-
