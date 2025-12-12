@@ -10,6 +10,11 @@ _It's MVU, but we lost the view along the way..._
 **Emyu** is a framework for building business logic in Rust using the Model-View-Update (MVU) architecture pattern, but
 where the View is implemented in a foreign language, such as Dart/Flutter, Java/Kotlin/Android, Swift/iOS, and others.
 
+The most important principle is that, from the perspective of the foreign language, the application is a black box where
+only the updaters and getters are exposed via FFI. The foreign language code can call the updaters to modify the
+application state, and it can call the getters to read the application state. The foreign language code is responsible 
+for rendering the UI based on the state it reads from the application.
+
 # Example
 
 ```rust
