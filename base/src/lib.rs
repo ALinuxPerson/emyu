@@ -20,9 +20,16 @@ pub mod __macros {
     #[cfg(feature = "frb-compat")]
     pub use flutter_rust_bridge::frb;
 
-    pub use crate::maybe::Shared;
     pub use crate::FlushSignals;
+    pub use crate::maybe::Shared;
+
+    #[cfg(feature = "proc-macros")]
+    pub use crate::__proc_macros::*;
 }
+
+#[cfg(feature = "proc-macros")]
+#[doc(hidden)]
+mod __proc_macros;
 
 #[doc(hidden)]
 pub mod __private {
@@ -45,8 +52,8 @@ pub mod __private {
 
 pub mod base;
 pub mod dispatcher;
-pub mod runtime;
 mod maybe;
+pub mod runtime;
 
 #[cfg(feature = "thread-safe")]
 pub mod handle;

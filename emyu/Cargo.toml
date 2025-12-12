@@ -7,7 +7,7 @@ edition = "2024"
 default = ["std"]
 frb-compat = ["emyu-base/frb-compat", "emyu-macros/frb-compat"]
 tokio = ["emyu-base/tokio"]
-macros = ["dep:emyu-macros"]
+macros = ["emyu-base/proc-macros", "dep:emyu-macros"]
 std = ["emyu-base/std"]
 
 [dependencies]

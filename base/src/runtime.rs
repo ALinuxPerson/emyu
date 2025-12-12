@@ -1,13 +1,13 @@
 use crate::base::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
+use crate::maybe::{MaybeRwLockReadGuard, MaybeSendSync, Shared};
 use crate::{FlushSignals, Interceptor, ModelBase, ModelBaseReader, Signal};
+use crate::{Getter, Updater};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use core::any::type_name;
 use core::ops::ControlFlow;
 use futures::StreamExt;
 use futures::channel::mpsc;
-use crate::{Getter, Updater};
-use crate::maybe::{MaybeRwLockReadGuard, MaybeSendSync, Shared};
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
@@ -130,7 +130,8 @@ impl<A: Application> MvuRuntime<A> {
             queue: &mut self.queue,
         };
         self.model.write().update(message, &mut update_ctx);
-        self.model.__accumulate_signals(&mut self.signals, crate::__token());
+        self.model
+            .__accumulate_signals(&mut self.signals, crate::__token());
         let mut command_ctx = CommandContext {
             model: self.model.reader(),
             world: &mut self.world,

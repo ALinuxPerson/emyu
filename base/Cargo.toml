@@ -9,6 +9,7 @@ frb-compat = ["dep:flutter_rust_bridge", "dep:anyhow"]
 tokio = ["dep:tokio"]
 thread-safe = []
 std = []
+proc-macros = ["dep:inventory", "dep:syn"]
 
 [dependencies]
 anyhow = { version = "1.0.100", optional = true }
@@ -17,7 +18,9 @@ crossbeam = "0.8.4"
 flutter_rust_bridge = { version = "2.11.1", optional = true }
 futures = "0.3.31"
 hashbrown = "0.16.1"
+inventory = { version = "0.3.21", optional = true }
 spin = "0.10.0"
+syn = { version = "2.0.111", features = ["full"], optional = true }
 thiserror = "2.0.17"
 tokio = { version = "1.48.0", features = ["rt-multi-thread"], optional = true }
 tracing = "0.1.41"

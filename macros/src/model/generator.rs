@@ -7,7 +7,18 @@ use crate::utils::ThisCrate;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use std::iter;
-use syn::{TypePath, Visibility};
+use syn::{Path, Type, TypePath, Visibility};
+
+fn syn_vis_to_emyu_vis(vis: &Visibility, crate_: &ThisCrate) -> TokenStream {
+    match vis {
+        Visibility::Public(_) => quote! { #crate_::__macros::Visibility::Public },
+        _ => quote! { #crate_::__macros::Visibility::Inherited },
+    }
+}
+
+fn syn_type_to_emyu_ty(ty: &Type, crate_: &ThisCrate) -> TokenStream {
+    todo!()
+}
 
 impl<'a> ModelContext<'a> {
     pub(super) fn generate(&self) -> TokenStream {
@@ -15,11 +26,13 @@ impl<'a> ModelContext<'a> {
         let message = self.generate_message();
         let updater = self.generate_updater();
         let getter = self.generate_getter();
+        let model_inventory = self.generate_model_inventory();
         quote! {
             #impl_model
             #message
             #updater
             #getter
+            #model_inventory
         }
     }
 
@@ -61,6 +74,33 @@ impl<'a> ModelContext<'a> {
                     _: #crate_::__private::Token,
                 ) {
                     #(#accumulate_signals)*
+                }
+            }
+        }
+    }
+
+    fn generate_model_inventory(&self) -> TokenStream {
+        let crate_ = &self.crate_;
+        let model_ty = &self.model_ty;
+        let new_vis = syn_vis_to_emyu_vis(&self.new_fn.vis, crate_);
+        let methods = self
+            .updaters
+            .iter()
+            .map(|u| u.generate_method_descriptor(crate_))
+            .chain(
+                self.getters
+                    .iter()
+                    .map(|g| g.generate_method_descriptor(crate_)),
+            );
+
+        quote! {
+            #crate_::__macros::inventory::submit! {
+                #crate_::__macros::ModelDescriptor {
+                    name: ::core::stringify!(#model_ty),
+                    path: ::core::module_path!(),
+                    root: false,
+                    new_vis: #new_vis,
+                    methods: &[#(#methods),*],
                 }
             }
         }
@@ -231,6 +271,16 @@ impl<'a> ParsedFnArg<'a> {
         let Self { attrs, name, ty } = *self;
         quote! { #(#[#attrs])* #name: #ty }
     }
+
+    fn generate_method_arg(&self, crate_: &ThisCrate) -> TokenStream {
+        let Self { name, ty, .. } = *self;
+        quote! {
+            #crate_::__macros::MethodArg {
+                name: ::core::stringify!(#name),
+                ty: ::core::stringify!(#ty),
+            }
+        }
+    }
 }
 
 impl ParsedNewFn {
@@ -286,6 +336,19 @@ impl<'a> ParsedUpdaterGetterFn<'a> {
         let message_name = &self.method_args.message.name;
 
         f(vis, meta, fn_name, message_name)
+    }
+
+    fn generate_method_descriptor(&self, variant: TokenStream, crate_: &ThisCrate) -> TokenStream {
+        let vis = syn_vis_to_emyu_vis(self.vis, crate_);
+        let name = &self.method_args.fn_name;
+
+        quote! {
+            #crate_::__macros::MethodDescriptor {
+                vis: #vis,
+                name: ::core::stringify!(#name),
+                variant: #crate_::__macros::MethodDescriptorVariant::#variant,
+            }
+        }
     }
 }
 
@@ -349,6 +412,16 @@ impl<'a> ParsedUpdaterFn<'a> {
                 }
             })
     }
+
+    fn generate_method_descriptor(&self, crate_: &ThisCrate) -> TokenStream {
+        let args = self.fn_args.iter().map(|fa| fa.generate_method_arg(crate_));
+        self.common.generate_method_descriptor(
+            quote! {
+                Updater { args: &[#(#args),*] }
+            },
+            crate_,
+        )
+    }
 }
 
 impl<'a> ParsedGetterFn<'a> {
@@ -407,5 +480,18 @@ impl<'a> ParsedGetterFn<'a> {
                     }
                 }
             })
+    }
+
+    fn generate_method_descriptor(&self, crate_: &ThisCrate) -> TokenStream {
+        let ret_ty = self.ret_ty;
+
+        self.common.generate_method_descriptor(
+            quote! {
+                Getter {
+                    ret_ty: #crate_::__macros::ReturnTy::Ty(::core::stringify!(#ret_ty)),
+                }
+            },
+            crate_,
+        )
     }
 }
