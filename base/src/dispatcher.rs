@@ -9,13 +9,8 @@ use std::convert::identity;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
 type RootMessageOf<M> = <RootModelOf<M> as Model>::Message;
+type Mapper<M> = dyn_Maybe!(SendSync Fn(<M as Model>::Message) -> RootMessageOf<M>);
 
-// NOTE: can't use `+ MaybeSendSync` because it is not an auto trait
-#[cfg(feature = "thread-safe")]
-type Mapper<M> = dyn Fn(<M as Model>::Message) -> RootMessageOf<M> + Send + Sync;
-
-#[cfg(not(feature = "thread-safe"))]
-type Mapper<M> = dyn Fn(<M as Model>::Message) -> RootMessageOf<M>;
 
 pub struct Updater<M: Model> {
     tx: mpsc::Sender<RootMessageOf<M>>,
