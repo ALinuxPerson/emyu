@@ -131,6 +131,22 @@ impl<F, ForApp> Debug for CommandFn<F, ForApp> {
     }
 }
 
+pub struct EmptyCommand<ForApp>(PhantomData<ForApp>);
+
+maybe_async_trait! {
+    impl<ForApp: Application> Command for EmptyCommand<ForApp> {
+        type ForApp = ForApp;
+
+        async fn apply(&mut self, _ctx: &mut CommandContext<'_, Self::ForApp>) {}
+    }
+}
+
+impl<ForApp> Debug for EmptyCommand<ForApp> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("EmptyCommand").finish()
+    }
+}
+
 pub fn command<F, ForApp>(f: F) -> CommandFn<F, ForApp> {
     CommandFn::new(f)
 }
