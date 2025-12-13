@@ -10,6 +10,13 @@ maybe_async_trait! {
         type ForApp: Application;
 
         async fn apply(&mut self, ctx: &mut CommandContext<'_, Self::ForApp>);
+
+        fn into_dyn(self) -> Box<dyn Command<ForApp = Self::ForApp>>
+        where
+            Self: Sized + 'static,
+        {
+            Box::new(self)
+        }
     }
 
     impl<C> Command for Option<C>
@@ -26,8 +33,9 @@ maybe_async_trait! {
     }
 }
 
-type DynCommandFnRepr<ForApp> =
-    Box<dyn_Maybe!(SendSync for<'rt> CommandFnHelper<'rt, ForApp, Fut = MaybeLocalBoxFuture<'rt, ()>>)>;
+type DynCommandFnRepr<ForApp> = Box<
+    dyn_Maybe!(SendSync for<'rt> CommandFnHelper<'rt, ForApp, Fut = MaybeLocalBoxFuture<'rt, ()>>),
+>;
 
 pub type DynCommandFn<ForApp> = CommandFn<DynCommandFnRepr<ForApp>, ForApp>;
 
@@ -102,8 +110,7 @@ where
     }
 }
 
-impl<'rt, ForApp: Application> CommandFnHelper<'rt, ForApp> for DynCommandFnRepr<ForApp>
-{
+impl<'rt, ForApp: Application> CommandFnHelper<'rt, ForApp> for DynCommandFnRepr<ForApp> {
     type Fut = MaybeLocalBoxFuture<'rt, ()>;
 
     fn call(&mut self, ctx: &mut CommandContext<'rt, ForApp>) -> Self::Fut {

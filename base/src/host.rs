@@ -11,36 +11,6 @@ use futures::channel::mpsc;
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
-pub struct CommandQueue<A>(VecDeque<Box<dyn Command<ForApp = A>>>);
-
-impl<A: Application> CommandQueue<A> {
-    pub fn emit<C: Command<ForApp = A> + 'static>(&mut self, command: C) {
-        self.0.push_back(Box::new(command));
-    }
-}
-
-impl<A: Application> CommandQueue<A> {
-    fn pop(&mut self) -> Option<Box<dyn Command<ForApp = A>>> {
-        self.0.pop_front()
-    }
-}
-
-impl<A> Default for CommandQueue<A> {
-    fn default() -> Self {
-        Self(VecDeque::new())
-    }
-}
-
-pub struct UpdateContext<'rt, A: Application> {
-    pub queue: &'rt mut CommandQueue<A>,
-}
-
-impl<'rt, A: Application> UpdateContext<'rt, A> {
-    pub fn emit_command<C: Command<ForApp = A> + 'static>(&mut self, command: C) {
-        self.queue.emit(command);
-    }
-}
-
 pub struct CommandContext<'rt, A: Application> {
     pub model: ModelBaseReader<A::RootModel>,
     pub world: &'rt mut World,
@@ -79,7 +49,6 @@ pub struct Host<A: Application> {
     model: ModelBase<A::RootModel>,
     world: World,
     interceptors: Vec<Box<dyn Interceptor<A>>>,
-    queue: CommandQueue<A>,
     signals: VecDeque<Shared<dyn FlushSignals>>,
     updater: Updater<A::RootModel>,
     message_rx: mpsc::Receiver<RootMessage<A>>,
@@ -126,10 +95,7 @@ impl<A: Application> Host<A> {
         for interceptor in &mut self.interceptors {
             interceptor.intercept(self.model.reader(), &message);
         }
-        let mut update_ctx = UpdateContext {
-            queue: &mut self.queue,
-        };
-        self.model.write().update(message, &mut update_ctx);
+        let mut command = self.model.write().update(message);
         self.model
             .__accumulate_signals(&mut self.signals, crate::__token());
         let mut command_ctx = CommandContext {
@@ -137,10 +103,7 @@ impl<A: Application> Host<A> {
             world: &mut self.world,
             updater: self.updater.clone(),
         };
-        while let Some(mut command) = self.queue.pop() {
-            tracing::debug!(?command, "applying command");
-            command.apply(&mut command_ctx).await;
-        }
+        command.apply(&mut command_ctx).await;
         while let Some(signal) = self.signals.pop_front() {
             signal.__flush(crate::__token());
         }
@@ -261,7 +224,6 @@ impl<A: Application> HostBuilder<A> {
             model: model.clone(),
             world: self.world,
             interceptors: self.interceptors,
-            queue: CommandQueue::default(),
             signals: VecDeque::new(),
             updater: Updater::new(message_tx),
             message_rx,

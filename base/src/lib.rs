@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
-extern crate core;
 
 #[macro_use]
 pub mod macros;

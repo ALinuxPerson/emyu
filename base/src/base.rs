@@ -1,4 +1,3 @@
-use crate::host::UpdateContext;
 use crate::maybe::{
     MaybeMutex, MaybeRwLock, MaybeRwLockReadGuard, MaybeRwLockWriteGuard, MaybeSend,
     MaybeSendStatic, MaybeSendSync, Shared,
@@ -33,13 +32,9 @@ pub trait ModelGetterMessage: MaybeSendStatic {
 pub trait Model: MaybeSendSync + 'static {
     type ForApp: Application;
     type Message: MaybeSend;
-    type Command: Command;
+    type Command: Command<ForApp = Self::ForApp>;
 
-    fn update(
-        &mut self,
-        message: Self::Message,
-        ctx: &mut UpdateContext<Self::ForApp>,
-    ) -> Self::Command;
+    fn update(&mut self, message: Self::Message) -> Self::Command;
 
     #[doc(hidden)]
     fn __accumulate_signals(
@@ -114,8 +109,8 @@ macro_rules! lens {
 }
 
 impl<M: Model> ModelBase<M> {
-    pub fn update(&self, message: M::Message, ctx: &mut UpdateContext<M::ForApp>) -> M::Command {
-        self.write().update(message, ctx)
+    pub fn update(&self, message: M::Message) -> M::Command {
+        self.write().update(message)
     }
 
     pub fn get<Msg>(&self) -> Signal<Msg::Data>
@@ -180,6 +175,7 @@ impl<M> Clone for ModelBaseReader<M> {
     }
 }
 
+/// Interceptors are ran _before_ the message gets processed by the host.
 pub trait Interceptor<A: Application>: MaybeSendSync + 'static {
     fn intercept(
         &mut self,
