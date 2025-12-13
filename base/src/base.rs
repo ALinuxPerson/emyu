@@ -1,13 +1,13 @@
-use crate::__private;
 use crate::host::UpdateContext;
 use crate::maybe::{
-    MaybeMutex, MaybeRwLock, MaybeRwLockReadGuard, MaybeRwLockWriteGuard,
-    MaybeSend, MaybeSendStatic, MaybeSendSync, Shared,
+    MaybeMutex, MaybeRwLock, MaybeRwLockReadGuard, MaybeRwLockWriteGuard, MaybeSend,
+    MaybeSendStatic, MaybeSendSync, Shared,
 };
-use core::fmt::{Debug};
+use crate::{__private, Command};
+use core::fmt::Debug;
 use core::marker::PhantomData;
-use futures::channel::mpsc;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
@@ -33,8 +33,13 @@ pub trait ModelGetterMessage: MaybeSendStatic {
 pub trait Model: MaybeSendSync + 'static {
     type ForApp: Application;
     type Message: MaybeSend;
+    type Command: Command;
 
-    fn update(&mut self, message: Self::Message, ctx: &mut UpdateContext<Self::ForApp>);
+    fn update(
+        &mut self,
+        message: Self::Message,
+        ctx: &mut UpdateContext<Self::ForApp>,
+    ) -> Self::Command;
 
     #[doc(hidden)]
     fn __accumulate_signals(
@@ -109,7 +114,7 @@ macro_rules! lens {
 }
 
 impl<M: Model> ModelBase<M> {
-    pub fn update(&self, message: M::Message, ctx: &mut UpdateContext<M::ForApp>) {
+    pub fn update(&self, message: M::Message, ctx: &mut UpdateContext<M::ForApp>) -> M::Command {
         self.write().update(message, ctx)
     }
 
