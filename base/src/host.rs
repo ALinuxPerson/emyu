@@ -1,8 +1,7 @@
+mod spawner;
 mod world;
 
-use crate::maybe::{
-    MaybeLocalBoxFuture, MaybeRwLockReadGuard, MaybeSend, MaybeSendSync, Shared, boxed_future,
-};
+use crate::maybe::{MaybeRwLockReadGuard, MaybeSendSync, Shared};
 use crate::{Application, Model, ModelGetterHandler, ModelGetterMessage, command};
 use crate::{FlushSignals, Interceptor, ModelBase, ModelBaseReader, Signal};
 use crate::{Getter, Updater};
@@ -12,6 +11,7 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use futures::StreamExt;
 use futures::channel::mpsc;
+pub use spawner::*;
 use world::WorldRepr;
 pub use world::{State, StateMut, StateRef, World};
 
@@ -234,15 +234,3 @@ impl<A: Application> Default for HostBuilder<A> {
         }
     }
 }
-
-pub trait Spawner: MaybeSend {
-    fn spawn_detached_dyn(&mut self, fut: MaybeLocalBoxFuture<()>);
-}
-
-pub trait SpawnerExt: Spawner {
-    fn spawn_detached(&mut self, fut: impl Future<Output = ()> + MaybeSend + 'static) {
-        self.spawn_detached_dyn(boxed_future(fut))
-    }
-}
-
-impl<T: Spawner + ?Sized> SpawnerExt for T {}
