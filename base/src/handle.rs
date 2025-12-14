@@ -48,9 +48,7 @@ where
     WU: WrappedUpdater<Model = A::RootModel>,
     WG: WrappedGetter<Model = A::RootModel>,
 {
-    pub fn new<S: GlobalSpawner>(
-        builder_fn: impl FnOnce(HostBuilder<A>) -> Host<A>,
-    ) -> Self {
+    pub fn new<S: GlobalSpawner>(builder_fn: impl FnOnce(HostBuilder<A>) -> Host<A>) -> Self {
         let host = builder_fn(HostBuilder::new());
         let updater = host.updater();
         let getter = host.getter();

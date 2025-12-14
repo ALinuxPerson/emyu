@@ -1,16 +1,15 @@
-use core::convert::identity;
 use crate::maybe::Shared;
 use crate::{
-    __private, Application, Model, ModelBase, ModelGetterHandler, ModelGetterMessage,
-    HostChannelClosed, Signal,
+    __private, Application, HostChannelClosed, Model, ModelBase, ModelGetterHandler,
+    ModelGetterMessage, Signal,
 };
+use core::convert::identity;
 use futures::SinkExt;
 use futures::channel::mpsc;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
 type RootMessageOf<M> = <RootModelOf<M> as Model>::Message;
 type Mapper<M> = dyn_Maybe!(SendSync Fn(<M as Model>::Message) -> RootMessageOf<M>);
-
 
 pub struct Updater<M: Model> {
     tx: mpsc::Sender<RootMessageOf<M>>,
@@ -31,10 +30,7 @@ where
 }
 
 impl<M: Model> Updater<M> {
-    pub async fn try_send(
-        &mut self,
-        message: M::Message,
-    ) -> Result<(), HostChannelClosed> {
+    pub async fn try_send(&mut self, message: M::Message) -> Result<(), HostChannelClosed> {
         self.tx
             .send((self.mapper)(message))
             .await

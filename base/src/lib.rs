@@ -49,16 +49,16 @@ pub mod __private {
 pub mod base;
 pub mod dispatcher;
 
-pub mod host;
 pub mod command;
+pub mod host;
 
 #[cfg(feature = "thread-safe")]
 pub mod handle;
 
 pub use base::*;
+pub use command::*;
 pub use dispatcher::*;
 pub use host::*;
-pub use command::*;
 
 #[cfg(feature = "thread-safe")]
 pub use handle::*;

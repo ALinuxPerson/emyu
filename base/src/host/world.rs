@@ -60,7 +60,10 @@ impl World {
         f(&self.state::<S>().read())
     }
 
-    pub fn try_get_mut<S: MaybeSendSync + 'static, R>(&self, f: impl FnOnce(Option<&mut S>) -> R) -> R {
+    pub fn try_get_mut<S: MaybeSendSync + 'static, R>(
+        &self,
+        f: impl FnOnce(Option<&mut S>) -> R,
+    ) -> R {
         if let Some(state) = self.try_state::<S>() {
             f(Some(&mut state.write()))
         } else {
@@ -92,7 +95,10 @@ impl World {
         f(&self.state::<S>().read()).await
     }
 
-    pub async fn try_get_mut_async<S, Fut>(&self, f: impl FnOnce(Option<&mut S>) -> Fut) -> Fut::Output
+    pub async fn try_get_mut_async<S, Fut>(
+        &self,
+        f: impl FnOnce(Option<&mut S>) -> Fut,
+    ) -> Fut::Output
     where
         S: MaybeSendSync + 'static,
         Fut: Future,

@@ -1,10 +1,10 @@
-use alloc::collections::VecDeque;
-use alloc::vec::Vec;
 use crate::maybe::{
     MaybeMutex, MaybeRwLock, MaybeRwLockReadGuard, MaybeRwLockWriteGuard, MaybeSend,
     MaybeSendStatic, MaybeSendSync, Shared,
 };
 use crate::{__private, Command};
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};

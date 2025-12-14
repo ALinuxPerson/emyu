@@ -1,9 +1,9 @@
 mod world;
 
-pub use world::{World, State, StateRef, StateMut};
-use world::WorldRepr;
-use crate::{command, Application, Model, ModelGetterHandler, ModelGetterMessage};
-use crate::maybe::{boxed_future, MaybeLocalBoxFuture, MaybeRwLockReadGuard, MaybeSend, MaybeSendSync, Shared};
+use crate::maybe::{
+    MaybeLocalBoxFuture, MaybeRwLockReadGuard, MaybeSend, MaybeSendSync, Shared, boxed_future,
+};
+use crate::{Application, Model, ModelGetterHandler, ModelGetterMessage, command};
 use crate::{FlushSignals, Interceptor, ModelBase, ModelBaseReader, Signal};
 use crate::{Getter, Updater};
 use alloc::boxed::Box;
@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use futures::StreamExt;
 use futures::channel::mpsc;
+use world::WorldRepr;
+pub use world::{State, StateMut, StateRef, World};
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 

@@ -19,7 +19,7 @@ use futures::channel::{mpsc, oneshot};
 use futures::{FutureExt, Stream, StreamExt, future, stream};
 
 type CommandRepr<T, ForApp> =
-Box<dyn_Maybe!(Send FnOnce(CommandContext<ForApp>) -> MaybeLocalBoxStream<'static, T>)>;
+    Box<dyn_Maybe!(Send FnOnce(CommandContext<ForApp>) -> MaybeLocalBoxStream<'static, T>)>;
 
 /// A set of concurrent actions to be performed by the host.
 ///
@@ -164,7 +164,7 @@ impl<T, ForApp: Application> Command<T, ForApp> {
                         Some((None, (stream, Some(outputs))))
                     },
                 )
-                    .filter_map(future::ready)
+                .filter_map(future::ready)
             }),
         }
     }
@@ -212,7 +212,7 @@ impl<T, ForApp: Application> fmt::Debug for Command<T, ForApp> {
             core::any::type_name::<T>(),
             core::any::type_name::<ForApp>()
         ))
-            .finish_non_exhaustive()
+        .finish_non_exhaustive()
     }
 }
 
