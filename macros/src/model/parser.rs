@@ -7,63 +7,12 @@ use crate::model::{
 use crate::utils;
 use crate::utils::{InterfaceImpl, MaybeStubFn, ThisCrate};
 use darling::FromAttributes;
-use proc_macro2::{Ident, TokenStream};
+use proc_macro2::TokenStream;
 use syn::spanned::Spanned;
 use syn::{
     AngleBracketedGenericArguments, FnArg, GenericArgument, GenericParam, Pat, PatIdent, PatType,
-    Path, PathArguments, PathSegment, ReturnType, Signature, Type, TypePath, TypeReference,
-    Visibility,
+    Path, PathArguments, PathSegment, ReturnType, Signature, Type, TypePath, Visibility,
 };
-
-fn is_ty_update_context(ty: &Type) -> bool {
-    // &...
-    if let Type::Reference(TypeReference {
-        mutability, elem, ..
-    }) = ty
-        // &mut ...
-        && mutability.is_some()
-        // &mut is::a::path ...
-        && let Type::Path(TypePath {
-            path: Path { segments, .. },
-            ..
-        }) = &**elem
-        // &mut [...]path<...?>
-        && let Some(PathSegment {
-            ident: ty_ident,
-            arguments:
-                PathArguments::AngleBracketed(AngleBracketedGenericArguments {
-                    args: generic_args, ..
-                }),
-        }) = segments.last()
-        // &mut UpdateContext<...?>
-        && ty_ident == "UpdateContext"
-        // &mut UpdateContext<...>
-        && !generic_args.is_empty()
-        // &mut UpdateContext<_, _> or &mut UpdateContext<_>
-        && generic_args.len() <= 2
-    {
-        if generic_args.len() == 2 {
-            matches!(
-                (generic_args.first(), generic_args.last()),
-                // UpdateContext<'_, MyApp>
-                (
-                    Some(GenericArgument::Lifetime(_)),
-                    Some(GenericArgument::Type(_))
-                ),
-            )
-        } else if generic_args.len() == 1 {
-            matches!(
-                generic_args.first(),
-                // UpdateContext<MyApp>
-                Some(GenericArgument::Type(_))
-            )
-        } else {
-            false
-        }
-    } else {
-        false
-    }
-}
 
 impl<'a> ModelContext<'a> {
     pub(super) fn parse(item: &'a InterfaceImpl, attrs: RawModelArgs) -> syn::Result<Self> {
@@ -127,11 +76,7 @@ impl<'a> ParsedFnFirstPass<'a> {
                 .sig
                 .inputs
                 .iter()
-                .flat_map(|i| {
-                    ParsedFnArg::parse(i)
-                        .map(|ret| ret.and_then(|r| r.fill_fn_kind(&mut kind)))
-                        .transpose()
-                })
+                .flat_map(|i| ParsedFnArg::parse(i).transpose())
                 .collect::<syn::Result<Vec<_>>>()?,
             kind,
         })
@@ -255,19 +200,17 @@ impl<'a> FnKind<'a> {
                 crate_,
                 flutter_rust_bridge,
             )?)),
-            (_, Some(SelfTy::Mutable), None, _, Some(block)) => {
-                Ok(Self::Updater {
-                    args: UpdaterGetterMethodArgs::parse_updater(
-                        args,
-                        &item.sig.ident,
-                        item.sig.span(),
-                        crate_,
-                        flutter_rust_bridge,
-                    )?,
-                    ctx: None, // ctx ident will be found in FnArgs parsing
-                    block,
-                })
-            }
+            (_, Some(SelfTy::Mutable), command_ty, _, Some(block)) => Ok(Self::Updater {
+                args: UpdaterGetterMethodArgs::parse_updater(
+                    args,
+                    &item.sig.ident,
+                    item.sig.span(),
+                    crate_,
+                    flutter_rust_bridge,
+                )?,
+                command_ty,
+                block,
+            }),
             (_, Some(SelfTy::Shared), Some(ty), true, None) => Ok(Self::Getter {
                 args: UpdaterGetterMethodArgs::parse_getter(
                     args,
@@ -286,42 +229,13 @@ impl<'a> FnKind<'a> {
     }
 }
 
-impl<'a> FnKind<'a> {
-    fn fill_update_context(&mut self, ctx: &'a Ident) {
-        if let FnKind::Updater { ctx: ctx_field, .. } = self {
-            *ctx_field = Some(ctx);
-        }
-    }
-}
-
-enum MaybeParsedFnArg<'a> {
-    Is(ParsedFnArg<'a>),
-    UpdateContext(&'a Ident),
-}
-
-impl<'a> MaybeParsedFnArg<'a> {
-    fn fill_fn_kind(self, kind: &mut FnKind<'a>) -> Option<ParsedFnArg<'a>> {
-        match self {
-            MaybeParsedFnArg::Is(fn_arg) => Some(fn_arg),
-            MaybeParsedFnArg::UpdateContext(ident) => {
-                kind.fill_update_context(ident);
-                None
-            }
-        }
-    }
-}
-
 impl<'a> ParsedFnArg<'a> {
-    fn parse(item: &'a FnArg) -> syn::Result<Option<MaybeParsedFnArg<'a>>> {
+    fn parse(item: &'a FnArg) -> syn::Result<Option<Self>> {
         match item {
             FnArg::Receiver(_) => Ok(None),
             FnArg::Typed(PatType { attrs, pat, ty, .. }) => {
                 if let Pat::Ident(PatIdent { ident: name, .. }) = &**pat {
-                    if is_ty_update_context(ty) {
-                        Ok(Some(MaybeParsedFnArg::UpdateContext(name)))
-                    } else {
-                        Ok(Some(MaybeParsedFnArg::Is(Self { attrs, name, ty })))
-                    }
+                    Ok(Some(Self { attrs, name, ty }))
                 } else {
                     Err(syn::Error::new_spanned(
                         item,
@@ -368,7 +282,7 @@ impl<'a> ParsedFnsSecondPass<'a> {
                 }
                 FnKind::Updater {
                     args: method_args,
-                    ctx,
+                    command_ty,
                     block,
                 } => updaters.push(ParsedUpdaterFn {
                     common: ParsedUpdaterGetterFn {
@@ -376,7 +290,7 @@ impl<'a> ParsedFnsSecondPass<'a> {
                         method_args,
                     },
                     fn_args: item.fn_args,
-                    ctx,
+                    command_ty,
                     block,
                 }),
                 FnKind::Getter {

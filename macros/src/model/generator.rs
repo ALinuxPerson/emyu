@@ -6,7 +6,6 @@ use crate::model::{
 use crate::utils::ThisCrate;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
-use std::iter;
 use syn::{TypePath, Visibility};
 
 impl<'a> ModelContext<'a> {
@@ -31,11 +30,11 @@ impl<'a> ModelContext<'a> {
         let model_fns = self
             .updaters
             .iter()
-            .map(|u| u.generate_model_fn(crate_, for_app));
+            .map(ParsedUpdaterFn::generate_model_fn);
         let match_cases = self
             .updaters
             .iter()
-            .map(|u| u.generate_match_case(message_name));
+            .map(|u| u.generate_match_case(message_name, crate_));
         let accumulate_signals = self
             .getters
             .iter()
@@ -49,7 +48,7 @@ impl<'a> ModelContext<'a> {
                 type ForApp = #for_app;
                 type Message = #message_name;
 
-                fn update(&mut self, message: #message_name, ctx: &mut #crate_::UpdateContext<#for_app>) {
+                fn update(&mut self, message: #message_name) -> #crate_::Command<#message_name, #for_app> {
                     match message {
                         #(#match_cases)*
                     }
@@ -301,30 +300,28 @@ impl<'a> ParsedUpdaterFn<'a> {
         }
     }
 
-    fn generate_match_case(&self, message_name: &Ident) -> TokenStream {
+    fn generate_match_case(&self, message_name: &Ident, crate_: &ThisCrate) -> TokenStream {
         let variant_name = &self.common.method_args.message.name;
         let fn_name = format_ident!("__{}", self.common.method_args.fn_name);
         let field_names = self.fn_args.iter().map(|fa| fa.name).collect::<Vec<_>>();
-        let field_names_and_ctx = field_names
-            .iter()
-            .copied()
-            .cloned()
-            .chain(iter::once(Ident::new("ctx", Span::call_site())));
+        let fn_call = quote! { self.#fn_name(#(#field_names),*) };
+        let rhs = if self.command_ty.is_some() {
+            quote! { #fn_call }
+        } else {
+            quote! {{
+                #fn_call;
+                #crate_::Command::none()
+            }}
+        };
 
         quote! {
-            #message_name::#variant_name { #(#field_names),* } => self.#fn_name(#(#field_names_and_ctx),*),
+            #message_name::#variant_name { #(#field_names),* } => #rhs,
         }
     }
 
-    fn generate_model_fn(&self, crate_: &ThisCrate, for_app: &Ident) -> TokenStream {
+    fn generate_model_fn(&self) -> TokenStream {
         let fn_name = format_ident!("__{}", self.common.method_args.fn_name);
-        let fn_args = self.fn_args.iter().map(|fa| fa.generate_fn_arg()).chain({
-            let ctx = self
-                .ctx
-                .cloned()
-                .unwrap_or_else(|| Ident::new("_", Span::call_site()));
-            iter::once(quote! { #ctx: &mut #crate_::UpdateContext<#for_app> })
-        });
+        let fn_args = self.fn_args.iter().map(|fa| fa.generate_fn_arg());
         let block = self.block;
         quote! {
             fn #fn_name(&mut self, #(#fn_args),*) { #block }

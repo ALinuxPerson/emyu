@@ -24,10 +24,10 @@ enum FnKind<'a> {
     // fn new();
     New(NewMethodArgs),
 
-    // fn updater(&mut self) {}
+    // fn updater(&mut self) [-> Command<Message, ForApp>] {}
     Updater {
         args: UpdaterGetterMethodArgs,
-        ctx: Option<&'a Ident>,
+        command_ty: Option<&'a Type>,
         block: &'a Block,
     },
 
@@ -66,7 +66,7 @@ struct ParsedUpdaterGetterFn<'a> {
 struct ParsedUpdaterFn<'a> {
     common: ParsedUpdaterGetterFn<'a>,
     fn_args: Vec<ParsedFnArg<'a>>,
-    ctx: Option<&'a Ident>,
+    command_ty: Option<&'a Type>,
     block: &'a Block,
 }
 
