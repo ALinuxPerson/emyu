@@ -24,8 +24,8 @@ mod spawner {
     }
 }
 
+use core::marker::PhantomData;
 pub use spawner::GlobalSpawner;
-use std::marker::PhantomData;
 
 #[cfg(feature = "frb-compat")]
 pub use spawner::FrbSpawner;

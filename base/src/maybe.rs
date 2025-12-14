@@ -9,6 +9,7 @@ mod impls {
     impl<T: 'static> MaybeStatic for T {}
     pub type Shared<T> = alloc::sync::Arc<T>;
     pub type MaybeLocalBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
+    pub type MaybeLocalBoxStream<'a, T> = futures::stream::BoxStream<'a, T>;
 }
 
 #[cfg(not(feature = "thread-safe"))]
@@ -22,9 +23,13 @@ mod impls {
     impl<T> MaybeStatic for T {}
     pub type Shared<T> = alloc::rc::Rc<T>;
     pub type MaybeLocalBoxFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
+    pub type MaybeLocalBoxStream<'a, T> = futures::stream::LocalBoxStream<'a, T>;
 }
 
-pub use impls::{MaybeSend, MaybeStatic, MaybeSync, Shared, MaybeLocalBoxFuture};
+use futures::{FutureExt, StreamExt};
+pub use impls::{
+    MaybeLocalBoxFuture, MaybeLocalBoxStream, MaybeSend, MaybeStatic, MaybeSync, Shared,
+};
 
 #[cfg(feature = "thread-safe")]
 mod sync {
@@ -169,4 +174,29 @@ macro_rules! dyn_Maybe {
     (Send $($traits:tt)+) => { dyn $($traits)+ };
     (Sync $($traits:tt)+) => { dyn $($traits)+ };
     (SendSync $($traits:tt)+) => { dyn $($traits)+ };
+}
+
+pub fn boxed_stream<T, S>(stream: S) -> MaybeLocalBoxStream<'static, T>
+where
+    S: futures::Stream<Item = T> + MaybeSend + 'static,
+{
+    #[cfg(feature = "thread-safe")]
+    let ret = stream.boxed();
+
+    #[cfg(not(feature = "thread-safe"))]
+    let ret = stream.boxed_local();
+
+    ret
+}
+
+pub fn boxed_future<F: Future + MaybeSend + 'static>(
+    fut: F,
+) -> MaybeLocalBoxFuture<'static, F::Output> {
+    #[cfg(feature = "thread-safe")]
+    let ret = fut.boxed();
+
+    #[cfg(not(feature = "thread-safe"))]
+    let ret = fut.boxed_local();
+
+    ret
 }

@@ -1,3 +1,5 @@
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 use crate::maybe::{
     MaybeMutex, MaybeRwLock, MaybeRwLockReadGuard, MaybeRwLockWriteGuard, MaybeSend,
     MaybeSendStatic, MaybeSendSync, Shared,
@@ -5,10 +7,9 @@ use crate::maybe::{
 use crate::{__private, Command};
 use core::fmt::Debug;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, Ordering};
 use futures::StreamExt;
 use futures::channel::mpsc;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 // must be `'static` for interceptors, `MaybeSendSync` for commands
@@ -32,9 +33,8 @@ pub trait ModelGetterMessage: MaybeSendStatic {
 pub trait Model: MaybeSendSync + 'static {
     type ForApp: Application;
     type Message: MaybeSend;
-    type Command: Command<ForApp = Self::ForApp>;
 
-    fn update(&mut self, message: Self::Message) -> Self::Command;
+    fn update(&mut self, message: Self::Message) -> Command<Self::Message, Self::ForApp>;
 
     #[doc(hidden)]
     fn __accumulate_signals(
@@ -109,7 +109,7 @@ macro_rules! lens {
 }
 
 impl<M: Model> ModelBase<M> {
-    pub fn update(&self, message: M::Message) -> M::Command {
+    pub fn update(&self, message: M::Message) -> Command<M::Message, M::ForApp> {
         self.write().update(message)
     }
 

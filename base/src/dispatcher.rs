@@ -1,3 +1,4 @@
+use core::convert::identity;
 use crate::maybe::Shared;
 use crate::{
     __private, Application, Model, ModelBase, ModelGetterHandler, ModelGetterMessage,
@@ -5,7 +6,6 @@ use crate::{
 };
 use futures::SinkExt;
 use futures::channel::mpsc;
-use std::convert::identity;
 
 type RootModelOf<M> = <<M as Model>::ForApp as Application>::RootModel;
 type RootMessageOf<M> = <RootModelOf<M> as Model>::Message;

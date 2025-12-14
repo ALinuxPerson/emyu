@@ -1,23 +1,27 @@
-use crate::{Application, Command, Model, ModelGetterHandler, ModelGetterMessage};
-use crate::maybe::{MaybeRwLockReadGuard, MaybeSendSync, Shared};
+mod world;
+
+pub use world::{World, State, StateRef, StateMut};
+use world::WorldRepr;
+use crate::{command, Application, Model, ModelGetterHandler, ModelGetterMessage};
+use crate::maybe::{boxed_future, MaybeLocalBoxFuture, MaybeRwLockReadGuard, MaybeSend, MaybeSendSync, Shared};
 use crate::{FlushSignals, Interceptor, ModelBase, ModelBaseReader, Signal};
 use crate::{Getter, Updater};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use core::any::type_name;
+use alloc::vec::Vec;
 use core::ops::ControlFlow;
 use futures::StreamExt;
 use futures::channel::mpsc;
 
 const DEFAULT_CHANNEL_BUFFER_SIZE: usize = 64;
 
-pub struct CommandContext<'rt, A: Application> {
+pub struct CommandContext<A: Application> {
     pub model: ModelBaseReader<A::RootModel>,
-    pub world: &'rt mut World,
+    pub world: World,
     pub updater: Updater<A::RootModel>,
 }
 
-impl<'rt, A: Application> CommandContext<'rt, A> {
+impl<A: Application> CommandContext<A> {
     pub fn read(&self) -> MaybeRwLockReadGuard<'_, A::RootModel> {
         self.model.read()
     }
@@ -30,16 +34,26 @@ impl<'rt, A: Application> CommandContext<'rt, A> {
         self.model.get()
     }
 
-    pub fn state<S: MaybeSendSync + 'static>(&self) -> &S {
-        self.world.get()
+    pub fn state<S: MaybeSendSync + 'static, R>(&self, f: impl FnOnce(&S) -> R) -> R {
+        self.world.get(f)
     }
 
-    pub fn state_mut<S: MaybeSendSync + 'static>(&mut self) -> &mut S {
-        self.world.get_mut()
+    pub fn state_mut<S: MaybeSendSync + 'static, R>(&self, f: impl FnOnce(&mut S) -> R) -> R {
+        self.world.get_mut(f)
     }
 
     pub async fn send_message(&mut self, message: <A::RootModel as Model>::Message) {
         self.updater.send(message).await
+    }
+}
+
+impl<A: Application> Clone for CommandContext<A> {
+    fn clone(&self) -> Self {
+        Self {
+            model: self.model.clone(),
+            world: self.world.clone(),
+            updater: self.updater.clone(),
+        }
     }
 }
 
@@ -49,6 +63,7 @@ pub struct Host<A: Application> {
     model: ModelBase<A::RootModel>,
     world: World,
     interceptors: Vec<Box<dyn Interceptor<A>>>,
+    spawner: Box<dyn Spawner>,
     signals: VecDeque<Shared<dyn FlushSignals>>,
     updater: Updater<A::RootModel>,
     message_rx: mpsc::Receiver<RootMessage<A>>,
@@ -95,15 +110,23 @@ impl<A: Application> Host<A> {
         for interceptor in &mut self.interceptors {
             interceptor.intercept(self.model.reader(), &message);
         }
-        let mut command = self.model.write().update(message);
+        let command = command::into_repr(self.model.write().update(message));
         self.model
             .__accumulate_signals(&mut self.signals, crate::__token());
-        let mut command_ctx = CommandContext {
-            model: self.model.reader(),
-            world: &mut self.world,
-            updater: self.updater.clone(),
-        };
-        command.apply(&mut command_ctx).await;
+        if let Some(command) = command {
+            let ctx = CommandContext {
+                model: self.model.reader(),
+                world: self.world.clone(),
+                updater: self.updater.clone(),
+            };
+            let mut updater = self.updater.clone();
+            self.spawner.spawn_detached(async move {
+                let mut stream = command(ctx);
+                while let Some(message) = stream.next().await {
+                    updater.send(message).await
+                }
+            });
+        }
         while let Some(signal) = self.signals.pop_front() {
             signal.__flush(crate::__token());
         }
@@ -120,45 +143,11 @@ impl<A: Application> Host<A> {
     }
 }
 
-#[derive(Default)]
-pub struct World(
-    #[cfg(feature = "thread-safe")] type_map::concurrent::TypeMap,
-    #[cfg(not(feature = "thread-safe"))] type_map::TypeMap,
-);
-
-impl World {
-    pub(crate) fn add_with<S: MaybeSendSync + 'static>(mut self, state: S) -> Self {
-        self.0.insert(state);
-        self
-    }
-
-    pub(crate) fn add<S: Default + MaybeSendSync + 'static>(self) -> Self {
-        self.add_with(S::default())
-    }
-
-    pub fn try_get<S: MaybeSendSync + 'static>(&self) -> Option<&S> {
-        self.0.get()
-    }
-
-    pub fn get<S: MaybeSendSync + 'static>(&self) -> &S {
-        self.try_get()
-            .unwrap_or_else(|| panic!("`{}` does not exist in the world", type_name::<S>()))
-    }
-
-    pub fn try_get_mut<S: MaybeSendSync + 'static>(&mut self) -> Option<&mut S> {
-        self.0.get_mut()
-    }
-
-    pub fn get_mut<S: MaybeSendSync + 'static>(&mut self) -> &mut S {
-        self.try_get_mut()
-            .unwrap_or_else(|| panic!("`{}` does not exist in the world", type_name::<S>()))
-    }
-}
-
 pub struct HostBuilder<A: Application> {
     model: Option<A::RootModel>,
-    world: World,
+    world: WorldRepr,
     interceptors: Vec<Box<dyn Interceptor<A>>>,
+    spawner: Option<Box<dyn Spawner>>,
     buffer_size: usize,
 }
 
@@ -222,8 +211,9 @@ impl<A: Application> HostBuilder<A> {
 
         Host {
             model: model.clone(),
-            world: self.world,
+            world: self.world.into(),
             interceptors: self.interceptors,
+            spawner: self.spawner.expect("spawner was not initialized"),
             signals: VecDeque::new(),
             updater: Updater::new(message_tx),
             message_rx,
@@ -235,9 +225,22 @@ impl<A: Application> Default for HostBuilder<A> {
     fn default() -> Self {
         Self {
             model: None,
-            world: World::default(),
+            world: WorldRepr::default(),
             interceptors: Vec::new(),
+            spawner: None,
             buffer_size: DEFAULT_CHANNEL_BUFFER_SIZE,
         }
     }
 }
+
+pub trait Spawner: MaybeSend {
+    fn spawn_detached_dyn(&mut self, fut: MaybeLocalBoxFuture<()>);
+}
+
+pub trait SpawnerExt: Spawner {
+    fn spawn_detached(&mut self, fut: impl Future<Output = ()> + MaybeSend + 'static) {
+        self.spawn_detached_dyn(boxed_future(fut))
+    }
+}
+
+impl<T: Spawner + ?Sized> SpawnerExt for T {}
